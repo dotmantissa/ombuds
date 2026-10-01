@@ -1,0 +1,48 @@
+# deps
+node_modules/
+web/node_modules/
+.pnp
+.pnp.js
+
+# env + secrets
+.env
+.env.local
+.env*.local
+.env.production
+!.env.example
+*.pem
+*.key
+keystore.json
+
+# next
+web/.next/
+web/out/
+web/build/
+.next/
+out/
+
+# python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# genlayer
+artifacts/
+.genlayer/
+
+# os / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# local task state (crash recovery, intentionally untracked)
+.task-checklist.md
+.agent-notes/
+*.log
+npm-debug.log*
