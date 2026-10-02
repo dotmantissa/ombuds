@@ -848,12 +848,7 @@ class OmbudsCourt(gl.Contract):
         self._bump_status("FILED", 1)
         self.total_disputed_atto = u256(int(self.total_disputed_atto) + disputed)
 
-        key = str(filer)
-        bucket = self.by_filer.get(key)
-        if bucket is None:
-            self.by_filer[key] = DynArray[str]()
-            bucket = self.by_filer[key]
-        bucket.append(docket)
+        self.by_filer.get_or_insert_default(str(filer)).append(docket)
 
         return docket
 

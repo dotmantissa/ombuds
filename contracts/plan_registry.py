@@ -576,17 +576,10 @@ class PlanRegistry(gl.Contract):
             self.rule_count = u256(int(self.rule_count) + 1)
             self.active_count = u256(int(self.active_count) + 1)
 
-            family_bucket = self.family_members.get(family_id)
-            if family_bucket is None:
-                self.family_members[family_id] = DynArray[str]()
-                family_bucket = self.family_members[family_id]
-            family_bucket.append(plan_id)
-
-            insurer_bucket = self.insurer_members.get(insurer)
-            if insurer_bucket is None:
-                self.insurer_members[insurer] = DynArray[str]()
-                insurer_bucket = self.insurer_members[insurer]
-            insurer_bucket.append(plan_id)
+            # get_or_insert_default is the only way to reach a nested collection. A
+            # DynArray cannot be constructed by hand; storage hands you the empty one.
+            self.family_members.get_or_insert_default(family_id).append(plan_id)
+            self.insurer_members.get_or_insert_default(insurer).append(plan_id)
         elif existing is not None and existing.retired:
             self.active_count = u256(int(self.active_count) + 1)
 
