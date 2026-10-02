@@ -17,7 +17,7 @@ import path from 'node:path';
 const skipRefresh = process.argv.includes('--no-refresh');
 const onlyRefresh = process.argv.includes('--refresh-only');
 
-const sources = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'sources.json'), 'utf8'));
+const sources = JSON.parse(fs.readFileSync(path.join(ROOT, 'web', 'data', 'sources.json'), 'utf8'));
 const client = chainClient();
 const { registry } = addresses();
 

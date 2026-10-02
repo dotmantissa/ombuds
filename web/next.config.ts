@@ -17,6 +17,12 @@ const nextConfig: NextConfig = {
     '@privy-io/server-auth',
     'pdf-lib',
   ],
+  outputFileTracingIncludes: {
+    '/api/sources': ['./data/sources.json'],
+    '/api/cases/[docket]/letter': ['./data/sources.json'],
+    '/sources': ['./data/sources.json'],
+    '/file': ['./data/sources.json'],
+  },
   typescript: {
     ignoreBuildErrors: false,
   },

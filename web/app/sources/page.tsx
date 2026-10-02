@@ -1,63 +1,12 @@
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
 import { CheckCircle2, CircleSlash, ExternalLink } from 'lucide-react';
 
 import { Code, FullRule, Label, Panel } from '@/components/ui/primitives';
+import { loadSources, type SourceDataset } from '@/lib/sources';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Sources we read' };
 
-interface Verification {
-  http_status: number | string;
-  observed_at: string;
-  reachable: boolean;
-}
-
-interface Family {
-  family_id: string;
-  label: string;
-  plain_language: string;
-  cpt_codes: Array<{ code: string; description: string }>;
-  icd10_codes: Array<{ code: string; description: string }>;
-  ncd: null | { display_id: string; title: string; api_url: string; effective_date?: string; verification?: Verification };
-  guideline?: { body: string; title: string; url: string; verification?: Verification };
-}
-
-interface StateRow {
-  state: string;
-  state_name: string;
-  agency: string;
-  statute_citation: string;
-  external_review_deadline_days: number;
-  mechanism: string;
-  statute_url: string;
-  follows_federal_default: boolean;
-}
-
-interface Dataset {
-  meta: {
-    generated_at: string;
-    verification_method: string;
-    fetchable_on_chain_note: string;
-    rejected: Array<{ source: string; url: string; reason: string }>;
-  };
-  procedure_families: Family[];
-  states: StateRow[];
-  denial_reason_codes: Array<{ code: string; set: string; description: string; maps_to_ground: string }>;
-  code_set_authorities: Array<{ set: string; steward: string; url: string }>;
-  federal_external_review: { rule: string; citation: string; default_request_window_days: number; url: string };
-}
-
-async function load(): Promise<Dataset | null> {
-  try {
-    const file = path.join(process.cwd(), '..', 'data', 'sources.json');
-    return JSON.parse(await readFile(file, 'utf8')) as Dataset;
-  } catch {
-    return null;
-  }
-}
-
-function Checked({ verification }: { verification?: Verification }) {
+function Checked({ verification }: { verification?: { http_status: number | string; observed_at: string; reachable: boolean } }) {
   if (verification === undefined) return null;
   const ok = verification.reachable;
   return (
@@ -73,7 +22,7 @@ function Checked({ verification }: { verification?: Verification }) {
 }
 
 export default async function SourcesPage() {
-  const data = await load();
+  const data: SourceDataset | null = await loadSources();
 
   if (data === null) {
     return (

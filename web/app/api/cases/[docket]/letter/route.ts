@@ -1,26 +1,14 @@
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 
 import { ombudsCourtAddress, readContract } from '@/lib/genlayer';
 import { bandLabel } from '@/lib/bands';
 import { GROUND_LABELS, isGround } from '@/types/ombuds';
 import { toWinAnsi } from '@/lib/prose';
+import { stateFor, type SourceStateRow } from '@/lib/sources';
 
 export const dynamic = 'force-dynamic';
 
 const DOCKET = /^OMB-\d{4}-\d{6}$/;
-
-interface StateRow {
-  state: string;
-  state_name: string;
-  agency: string;
-  statute_citation: string;
-  external_review_deadline_days: number;
-  mechanism: string;
-  statute_url: string;
-  agency_url: string;
-}
 
 /**
  * The appeal letter.
@@ -53,7 +41,7 @@ export async function GET(_req: Request, context: { params: Promise<{ docket: st
   }
 
   const stateCode = String(kase.state ?? '');
-  const stateRow = await lookupState(stateCode);
+  const stateRow: SourceStateRow | null = await stateFor(stateCode);
 
   const pdf = await PDFDocument.create();
   pdf.setTitle(`Appeal of a denied claim, docket ${docket}`);
@@ -242,14 +230,4 @@ function wrap(
   }
   if (line !== '') lines.push(line);
   return lines.length > 0 ? lines : [''];
-}
-
-async function lookupState(code: string): Promise<StateRow | null> {
-  try {
-    const file = path.join(process.cwd(), '..', 'data', 'sources.json');
-    const data = JSON.parse(await readFile(file, 'utf8')) as { states: StateRow[] };
-    return data.states.find((row) => row.state === code) ?? null;
-  } catch {
-    return null;
-  }
 }

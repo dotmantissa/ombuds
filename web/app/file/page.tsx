@@ -1,44 +1,14 @@
 import { FileWizard } from '@/components/FileWizard';
 import { Label } from '@/components/ui/primitives';
 import { planRules } from '@/lib/chainReads';
-import { readFile } from 'node:fs/promises';
-import path from 'node:path';
+import { reasonCodes, statesList } from '@/lib/sources';
 
 export const dynamic = 'force-dynamic';
 
 export const metadata = { title: 'File a case' };
 
-interface StateRow {
-  state: string;
-  state_name: string;
-  agency: string;
-  statute_citation: string;
-  external_review_deadline_days: number;
-  mechanism: string;
-}
-
-interface ReasonCode {
-  code: string;
-  set: string;
-  description: string;
-  maps_to_ground: string;
-}
-
-async function loadReference(): Promise<{ states: StateRow[]; codes: ReasonCode[] }> {
-  try {
-    const file = path.join(process.cwd(), '..', 'data', 'sources.json');
-    const data = JSON.parse(await readFile(file, 'utf8')) as {
-      states: StateRow[];
-      denial_reason_codes: ReasonCode[];
-    };
-    return { states: data.states ?? [], codes: data.denial_reason_codes ?? [] };
-  } catch {
-    return { states: [], codes: [] };
-  }
-}
-
 export default async function FilePage() {
-  const [rules, reference] = await Promise.all([planRules(), loadReference()]);
+  const [rules, states, codes] = await Promise.all([planRules(), statesList(), reasonCodes()]);
   const usable = rules.filter((rule) => rule.active);
 
   return (
@@ -67,8 +37,8 @@ export default async function FilePage() {
           cmsSourceUrl: rule.cms_source_url,
           effectiveTo: rule.effective_to,
         }))}
-        states={reference.states}
-        reasonCodes={reference.codes}
+        states={states}
+        reasonCodes={codes}
       />
     </section>
   );

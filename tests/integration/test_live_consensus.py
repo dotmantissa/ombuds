@@ -362,7 +362,7 @@ def test_a_verdict_can_be_escalated_to_a_fresh_panel():
 @pytest.mark.slow
 def test_the_seeded_registry_matches_the_verified_dataset():
     """Everything in data/sources.json registers and refreshes on a live network."""
-    data = json.loads((ROOT / "data" / "sources.json").read_text())
+    data = json.loads((ROOT / "web" / "data" / "sources.json").read_text())
     rules = data["plan_rules"]
     assert len(rules) >= 5
 

@@ -142,7 +142,7 @@ You can run the contract side check yourself before filing anything. It stores n
 
 ## Sources, and what was rejected
 
-Every source is public and every URL in `data/sources.json` carries the HTTP status it
+Every source is public and every URL in `web/data/sources.json` carries the HTTP status it
 actually answered with and the moment it was observed. Nothing is asserted without a recorded
 observation.
 
@@ -212,7 +212,7 @@ contracts/
 tests/
   direct/             168 tests, run against genuine captured source documents.
   fixtures/           real Aetna bulletin pages and CMS payloads, byte for byte.
-data/sources.json     every source, with the status it answered with when checked.
+web/data/sources.json every source, with the status it answered with when checked.
 deploy/               deployment, registry seeding, pool funding.
 scripts/              source verification, chain checks, the end to end run.
 web/                  Next.js 15 App Router, the API routes and the pages.

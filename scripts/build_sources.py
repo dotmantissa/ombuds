@@ -22,7 +22,7 @@ import urllib.error
 import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-OUT = ROOT / "data" / "sources.json"
+OUT = ROOT / "web" / "data" / "sources.json"
 
 UA = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
