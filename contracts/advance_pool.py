@@ -132,6 +132,7 @@ class AdvancePool(gl.Contract):
     total_recovered_atto: u256
     total_fees_atto: u256
     total_written_off_atto: u256
+    total_member_share_atto: u256
     advance_count: u256
 
     def __init__(
@@ -170,6 +171,7 @@ class AdvancePool(gl.Contract):
         self.total_recovered_atto = u256(0)
         self.total_fees_atto = u256(0)
         self.total_written_off_atto = u256(0)
+        self.total_member_share_atto = u256(0)
         self.advance_count = u256(0)
 
     # ------------------------------------------------------------------------- internals
@@ -178,23 +180,28 @@ class AdvancePool(gl.Contract):
         if str(gl.message.sender_address) != str(self.owner):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} caller is not the pool owner")
 
+    def _free_capital(self) -> int:
+        """Cash the pool actually holds and is free to commit.
+
+        Follow the money rather than the bookkeeping. Deposits came in. Withdrawals went
+        out. Advances went out to members. Recoveries came back in, counting only the part
+        that belongs to the pool, because a surplus above principal plus fee belongs to the
+        member and is held for them under claimable_atto rather than treated as capital.
+        """
+        free = int(self.total_capital_atto)
+        free = free + int(self.total_recovered_atto)
+        free = free - int(self.total_withdrawn_atto)
+        free = free - int(self.total_advanced_atto)
+        return free if free > 0 else 0
+
     def _equity(self) -> int:
         """Underwriter equity, which is the Total Value Governed.
 
-        Deposits, less what has been withdrawn, plus everything recovered from insurers,
-        less everything that was never recovered. Fees are not subtracted: a fee stays in
-        the pool and is simply attributed to the underwriters who were carrying the risk.
+        Cash on hand plus the advances still out with members. An outstanding advance is
+        not gone, it is a receivable against an insurer, so making one does not change the
+        total governed. Losing one does, and that is what a write off records.
         """
-        equity = int(self.total_capital_atto)
-        equity = equity - int(self.total_withdrawn_atto)
-        equity = equity + int(self.total_recovered_atto)
-        equity = equity - int(self.total_written_off_atto)
-        return equity if equity > 0 else 0
-
-    def _free_capital(self) -> int:
-        """Equity that is not currently out on an advance."""
-        free = self._equity() - int(self.outstanding_atto)
-        return free if free > 0 else 0
+        return self._free_capital() + int(self.outstanding_atto)
 
     def _band_cap(self, band: int) -> int:
         total = len(self.band_caps_atto)
@@ -244,6 +251,7 @@ class AdvancePool(gl.Contract):
             "total_recovered_atto": str(int(self.total_recovered_atto)),
             "total_fees_atto": str(int(self.total_fees_atto)),
             "total_written_off_atto": str(int(self.total_written_off_atto)),
+            "claimable_to_members_atto": str(int(self.total_member_share_atto)),
             "advance_count": int(self.advance_count),
             "underwriter_count": len(self.underwriter_list),
             "utilisation_bps": utilisation,
@@ -435,6 +443,8 @@ class AdvancePool(gl.Contract):
         if amount <= 0:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} the withdrawal must be above zero")
 
+        # Principal plus the fees this position earned, less whatever has already been
+        # taken out. A loss shows up through _free_capital, not by rewriting principal.
         entitled = (
             int(record.principal_atto)
             + int(record.fees_earned_atto)
@@ -589,6 +599,9 @@ class AdvancePool(gl.Contract):
         if member_share > 0:
             current = int(self.claimable_atto.get(record.member, u256(0)))
             self.claimable_atto[record.member] = u256(current + member_share)
+            self.total_member_share_atto = u256(
+                int(self.total_member_share_atto) + member_share
+            )
 
         # Fees accrue to underwriters in proportion to principal, recorded for the UI.
         total_principal = int(self.total_capital_atto)
@@ -638,6 +651,7 @@ class AdvancePool(gl.Contract):
             "written_off_atto": str(principal),
             "note": note,
             "total_written_off_atto": str(int(self.total_written_off_atto)),
+            "claimable_to_members_atto": str(int(self.total_member_share_atto)),
         }
 
     @gl.public.write
