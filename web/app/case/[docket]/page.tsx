@@ -13,6 +13,7 @@ import {
 } from '@/lib/chainReads';
 import { bandLabel, formatAttoRounded } from '@/lib/bands';
 import { GROUND_LABELS, GROUND_DESCRIPTIONS, isGround } from '@/types/ombuds';
+import { tidyProse } from '@/lib/prose';
 
 export const dynamic = 'force-dynamic';
 
@@ -129,7 +130,7 @@ export default async function CasePage({ params }: { params: Promise<{ docket: s
 
                 <FullRule />
 
-                <p className="text-16 text-text">{String(verdict.reasoning ?? '')}</p>
+                <p className="text-16 text-text">{tidyProse(String(verdict.reasoning ?? ''))}</p>
 
                 {overturn && (
                   <>
@@ -168,7 +169,7 @@ export default async function CasePage({ params }: { params: Promise<{ docket: s
                   className="mt-4 border-l-2 pl-5 text-20 text-text"
                   style={{ borderColor: 'var(--signal)' }}
                 >
-                  {String(verdict.clause_quote ?? '')}
+                  {tidyProse(String(verdict.clause_quote ?? ''))}
                 </blockquote>
                 <p className="mt-4 text-13 text-text-3">
                   Every validator checked this sentence against the document it had just fetched. A
@@ -245,7 +246,7 @@ export default async function CasePage({ params }: { params: Promise<{ docket: s
 
               <div>
                 <dt className="mono text-12 text-text-3">Their stated rationale, verbatim</dt>
-                <dd className="mt-2 text-14 text-text">{String(kase.denial_rationale ?? '')}</dd>
+                <dd className="mt-2 text-14 text-text">{tidyProse(String(kase.denial_rationale ?? ''))}</dd>
               </div>
             </dl>
           </Panel>

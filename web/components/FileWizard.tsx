@@ -374,7 +374,7 @@ export function FileWizard({
                             />
                             <span>
                               <span className="block text-14 text-text">
-                                {option.insurer} &mdash; {option.bulletinTitle || option.familyId.replace(/_/g, ' ')}
+                                {option.insurer}, {option.bulletinTitle || option.familyId.replace(/_/g, ' ')}
                               </span>
                               <span className="mono mt-1 block text-12 text-text-3">
                                 bulletin {option.bulletinNumber}

@@ -5,6 +5,7 @@ import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { ombudsCourtAddress, readContract } from '@/lib/genlayer';
 import { bandLabel } from '@/lib/bands';
 import { GROUND_LABELS, isGround } from '@/types/ombuds';
+import { toWinAnsi } from '@/lib/prose';
 
 export const dynamic = 'force-dynamic';
 
@@ -87,7 +88,9 @@ export async function GET(_req: Request, context: { params: Promise<{ docket: st
     const font = opts.font ?? body;
     const size = opts.size ?? 10.5;
     const colour = opts.colour ?? ink;
-    for (const line of wrap(text, font, size, width)) {
+    // Everything drawn goes through this. A bulletin quote carrying a maths symbol would
+    // otherwise make pdf-lib throw and take the whole letter down with it.
+    for (const line of wrap(toWinAnsi(text), font, size, width)) {
       space(size + 3.5);
       page.drawText(line, { x: margin, y, size, font, color: colour });
     }

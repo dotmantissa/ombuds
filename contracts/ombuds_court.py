@@ -978,7 +978,12 @@ Return JSON with exactly these keys:
   "clause_quote": "the verbatim sentence",
   "recoverable_usd": a whole number,
   "confidence": a whole number from 0 to 100,
-  "reasoning": "two or three sentences a person who is not a lawyer can follow"}}"""
+  "reasoning": "two or three sentences a person who is not a lawyer can follow"}}
+
+Write the reasoning in plain prose with no dashes used as punctuation. Use a comma or a
+full stop where you would reach for a dash. Hyphens inside a word such as "Roux-en-Y" are
+fine. This is a style requirement for the letter this ends up in, and it has no bearing on
+the decision."""
 
             answer = gl.nondet.exec_prompt(prompt, response_format="json")
             if not isinstance(answer, dict):

@@ -42,17 +42,74 @@ export function chainClient(keyName = 'DEPLOYER_KEY') {
   });
 }
 
-export async function send(client, address, functionName, args, label) {
-  const txHash = await client.writeContract({ address, functionName, args, value: 0n });
-  const receipt = await client.waitForTransactionReceipt({
-    hash: txHash,
-    status: 'ACCEPTED',
-    interval: 3000,
-    retries: 200,
-  });
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * The studio endpoint intermittently answers an RPC call with an HTML error page instead
+ * of JSON, which viem surfaces as "Unexpected token '<'". That is infrastructure weather,
+ * not a contract failure, so it is worth retrying rather than losing a submitted
+ * transaction over.
+ */
+function isTransportHiccup(err) {
+  const text = String(err?.message || err);
+  return (
+    text.includes('is not valid JSON') ||
+    text.includes('Service temporarily unavailable') ||
+    text.includes('Requested resource not available') ||
+    text.includes('ECONNRESET') ||
+    text.includes('socket hang up') ||
+    text.includes('fetch failed')
+  );
+}
+
+async function resilient(fn, what, attempts = 5) {
+  let last;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      last = err;
+      if (!isTransportHiccup(err)) throw err;
+      const wait = 4000 * (i + 1);
+      console.log(`    ${what} hit a transport hiccup, retrying in ${wait / 1000}s`);
+      await sleep(wait);
+    }
+  }
+  throw last;
+}
+
+export async function send(client, address, functionName, args, label, value = 0n) {
+  const txHash = await resilient(
+    () => client.writeContract({ address, functionName, args, value }),
+    `submitting ${functionName}`,
+  );
+
+  const receipt = await resilient(
+    () =>
+      client.waitForTransactionReceipt({
+        hash: txHash,
+        status: 'ACCEPTED',
+        interval: 3000,
+        retries: 200,
+      }),
+    `waiting on ${functionName}`,
+  );
+
   const exec = receipt?.data?.execution_result ?? receipt?.execution_result;
   const failed = exec && String(exec).toUpperCase().includes('ERROR');
   if (label) console.log(`  ${failed ? 'FAILED' : 'ok'}  ${label}  ${txHash}`);
-  if (failed) throw new Error(`${functionName} was accepted but execution failed`);
+  if (failed) {
+    const stderr = receipt?.data?.stderr || receipt?.stderr || '';
+    throw new Error(
+      `${functionName} was accepted but execution failed${stderr ? `: ${String(stderr).slice(0, 400)}` : ''}`,
+    );
+  }
   return txHash;
+}
+
+export async function read(client, address, functionName, args = []) {
+  return resilient(
+    () => client.readContract({ address, functionName, args }),
+    `reading ${functionName}`,
+  );
 }
