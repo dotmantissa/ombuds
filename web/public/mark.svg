@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" role="img" aria-labelledby="ombuds-mark-title">
+  <title id="ombuds-mark-title">Ombuds</title>
+  <!--
+    The Ombuds mark. A seal ring, open at the lower left, admitting a single rule that crosses
+    the seal, turns a full half turn about the seal's own centre line, and comes back.
+    Monoline. currentColor driven so it inherits the theme. No fills, no gradients, no filters.
+  -->
+  <g stroke="currentColor" stroke-linecap="butt" stroke-linejoin="round">
+    <path d="M3.654 16.325A9.4 9.4 0 1 0 2.662 13.075" stroke-width="2.1"/>
+    <path d="M1.905 14.7H14.3a2.7 2.7 0 0 0 0-5.4H5.8" stroke-width="1.85"/>
+  </g>
+</svg>

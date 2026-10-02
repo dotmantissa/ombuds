@@ -1,0 +1,573 @@
+@import "tailwindcss";
+
+/* ===========================================================================
+   Ombuds visual system
+   Implements DESIGN_TOKENS.md. Base palette is #a238ff, #ffffff, #1b191f and
+   everything else is derived from those three.
+
+   Dark is the DEFAULT. Tokens live on :root as dark values. Light arrives in
+   two ways: the system preference, and an explicit data-theme on <html> set by
+   the toggle. An explicit choice always beats the system preference.
+
+   Two rules worth stating out loud, because they are easy to undo by accident:
+   there are no box shadow tokens in this file at all, and the focus ring is
+   never removed. Depth comes from hairlines and ground shifts.
+   =========================================================================== */
+
+/* ---------------------------------------------------------------------------
+   Variant for the light theme.
+   Dark is the default, so a `dark:` prefix is almost never needed. `light:` is
+   occasionally useful where a utility genuinely has to differ, and it honours
+   both the explicit attribute and the system preference.
+   --------------------------------------------------------------------------- */
+@custom-variant light {
+  &:where([data-theme="light"], [data-theme="light"] *) {
+    @slot;
+  }
+  @media (prefers-color-scheme: light) {
+    &:where(:root:not([data-theme="dark"]), :root:not([data-theme="dark"]) *) {
+      @slot;
+    }
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Theme bridge, part one: everything that does NOT flip with the theme.
+   A plain @theme block emits these onto :root, so they are usable both as
+   Tailwind utilities and as raw custom properties.
+   --------------------------------------------------------------------------- */
+@theme {
+  /* Fonts. next/font exposes --font-archivo and --font-plex-mono; the layout
+     agent wires those up. The fallbacks below keep the page readable if the
+     webfont has not landed yet.
+
+     Archivo is a variable font with a width axis. Display uses a condensed
+     width so a headline reads like a public notice. Body stays at width 100. */
+  --font-display: var(--font-archivo), "Archivo", "Archivo Narrow",
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-body: var(--font-archivo), "Archivo", ui-sans-serif, system-ui,
+    -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: var(--font-plex-mono), "IBM Plex Mono", ui-monospace,
+    SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* Type scale, a 1.25 ratio off 16px: 12 13 14 16 20 25 31 39 49 61.
+     The four largest steps are clamped so a headline does not shout on a
+     phone. Tailwind's --text-* namespace gives text-12 through text-61, and
+     the paired --line-height keeps leading sane without a second utility. */
+  --text-12: 0.75rem;
+  --text-12--line-height: 1.45;
+  --text-13: 0.8125rem;
+  --text-13--line-height: 1.45;
+  --text-14: 0.875rem;
+  --text-14--line-height: 1.5;
+  --text-16: 1rem;
+  --text-16--line-height: 1.55;
+  --text-20: 1.25rem;
+  --text-20--line-height: 1.45;
+  --text-25: clamp(1.3125rem, 1.1rem + 0.6vw, 1.5625rem);
+  --text-25--line-height: 1.3;
+  --text-31: clamp(1.5rem, 1.2rem + 1.1vw, 1.9375rem);
+  --text-31--line-height: 1.2;
+  --text-39: clamp(1.75rem, 1.3rem + 1.9vw, 2.4375rem);
+  --text-39--line-height: 1.12;
+  --text-49: clamp(2rem, 1.35rem + 2.9vw, 3.0625rem);
+  --text-49--line-height: 1.06;
+  --text-61: clamp(2.25rem, 1.3rem + 4.4vw, 3.8125rem);
+  --text-61--line-height: 1.02;
+
+  /* Geometry. 2px everywhere, with a single exception: the pill chip, used
+     only for case status. Named rounded-hair and rounded-pill so neither
+     collides with Tailwind's own rounded-r (border right radius). */
+  --radius-hair: 2px;
+  --radius-pill: 999px;
+
+  /* No box shadows anywhere in Ombuds. Clearing the namespaces means a stray
+     shadow utility simply produces nothing, so the rule holds itself up
+     instead of relying on everyone remembering it. */
+  --shadow-*: initial;
+  --inset-shadow-*: initial;
+  --drop-shadow-*: initial;
+  --text-shadow-*: initial;
+
+  /* The one orchestrated load sequence, also reachable as animate-* utilities. */
+  --animate-rule-draw: rule-draw 520ms cubic-bezier(0.2, 0.7, 0.2, 1) backwards;
+  --animate-set-type: set-type 420ms cubic-bezier(0.2, 0.7, 0.2, 1) backwards;
+  --animate-stamp-in: stamp-in 140ms cubic-bezier(0.2, 0.7, 0.2, 1) backwards;
+}
+
+/* ---------------------------------------------------------------------------
+   Theme bridge, part two: the colours, which DO flip.
+   `inline` is load bearing. It makes Tailwind write var(--ink) directly into
+   the utility rather than snapshotting the current value, which is the only
+   way bg-ink, text-text-2 and border-line can follow a theme change.
+   --------------------------------------------------------------------------- */
+@theme inline {
+  --color-ink: var(--ink);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-text: var(--text);
+  --color-text-2: var(--text-2);
+  --color-text-3: var(--text-3);
+  --color-signal: var(--signal);
+  --color-signal-bright: var(--signal-bright);
+  --color-signal-wash: var(--signal-wash);
+  --color-win: var(--win);
+  --color-loss: var(--loss);
+  --color-wait: var(--wait);
+}
+
+/* ---------------------------------------------------------------------------
+   Dark tokens. This is the default, not an override.
+   --------------------------------------------------------------------------- */
+:root {
+  color-scheme: dark;
+
+  --ink: #1b191f;
+  --surface: #221f27;
+  --raised: #2a2630;
+  --line: #3a3542;
+  --line-strong: #4b4455;
+  --text: #f4f2f7;
+  --text-2: #a39daf;
+  --text-3: #726b7e;
+  --signal: #a238ff;
+  --signal-bright: #c285ff;
+  --signal-wash: rgba(162, 56, 255, 0.12);
+  --win: #3ddc97;
+  --loss: #ff5d5d;
+  --wait: #ffb224;
+
+  /* Geometry. One radius for everything, kept as --r because the spec names it
+     that, and bridged to Tailwind above as --radius-hair. */
+  --r: 2px;
+  --r-pill: 999px;
+  --hairline: 1px;
+
+  /* Archivo variable axes. Display runs condensed and heavy, body stays normal. */
+  --display-width: 82%;
+  --display-weight: 650;
+  --body-width: 100%;
+  --body-weight: 420;
+
+  /* Leading, for the places a Tailwind step is not the right answer. */
+  --lh-tight: 1.05;
+  --lh-snug: 1.25;
+  --lh-body: 1.55;
+
+  /* The evidence margin rail. Collapses to nothing under 1100px, where the
+     citations move inline under the claim they belong to. */
+  --rail-w: clamp(0px, 18vw, 260px);
+  --rail-gap: clamp(1rem, 2.5vw, 2.5rem);
+
+  /* Step between staggered children in the load sequence. Neutralised to 0ms
+     under prefers-reduced-motion, right at the bottom of this file. */
+  --stagger: 60ms;
+}
+
+/* Light, by system preference. Scoped so an explicit dark choice still wins. */
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+
+    --ink: #faf9fb;
+    --surface: #ffffff;
+    --raised: #f4f2f7;
+    --line: #e4e1e9;
+    --line-strong: #cdc8d6;
+    --text: #1b191f;
+    --text-2: #5d5668;
+    --text-3: #8b8397;
+    --signal: #8a1ee6;
+    --signal-bright: #6f14bb;
+    --signal-wash: rgba(138, 30, 230, 0.1);
+    --win: #0f9d63;
+    --loss: #d93636;
+    --wait: #b26a00;
+  }
+}
+
+/* Light, chosen explicitly by the toggle. Same values. */
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --ink: #faf9fb;
+  --surface: #ffffff;
+  --raised: #f4f2f7;
+  --line: #e4e1e9;
+  --line-strong: #cdc8d6;
+  --text: #1b191f;
+  --text-2: #5d5668;
+  --text-3: #8b8397;
+  --signal: #8a1ee6;
+  --signal-bright: #6f14bb;
+  --signal-wash: rgba(138, 30, 230, 0.1);
+  --win: #0f9d63;
+  --loss: #d93636;
+  --wait: #b26a00;
+}
+
+/* Dark, chosen explicitly by the toggle. Needed so an explicit dark choice
+   survives a light system preference. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --ink: #1b191f;
+  --surface: #221f27;
+  --raised: #2a2630;
+  --line: #3a3542;
+  --line-strong: #4b4455;
+  --text: #f4f2f7;
+  --text-2: #a39daf;
+  --text-3: #726b7e;
+  --signal: #a238ff;
+  --signal-bright: #c285ff;
+  --signal-wash: rgba(162, 56, 255, 0.12);
+  --win: #3ddc97;
+  --loss: #ff5d5d;
+  --wait: #ffb224;
+}
+
+/* ---------------------------------------------------------------------------
+   Base layer
+   --------------------------------------------------------------------------- */
+@layer base {
+  html {
+    /* clip rather than hidden: it stops .rule-full bleeding into a horizontal
+       scrollbar without turning the root into a scroll container, so sticky
+       positioning keeps working. */
+    overflow-x: clip;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--ink);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: var(--text-16);
+    line-height: var(--lh-body);
+    font-variation-settings: "wdth" 100;
+    font-weight: var(--body-weight);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    color-scheme: inherit;
+    margin: 0;
+    min-height: 100vh;
+  }
+
+  h1,
+  h2,
+  h3 {
+    font-family: var(--font-display);
+    font-weight: var(--display-weight);
+    font-stretch: var(--display-width);
+    font-variation-settings: "wdth" 82;
+    line-height: var(--lh-tight);
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+  }
+
+  h4,
+  h5,
+  h6 {
+    font-family: var(--font-display);
+    font-weight: 600;
+    line-height: var(--lh-snug);
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  code,
+  kbd,
+  samp,
+  pre {
+    font-family: var(--font-mono);
+    font-feature-settings: "liga" 0;
+  }
+
+  a {
+    color: inherit;
+    text-decoration-color: var(--line-strong);
+    text-underline-offset: 0.2em;
+  }
+
+  a:hover {
+    text-decoration-color: var(--signal);
+  }
+
+  hr {
+    border: 0;
+    border-top: var(--hairline) solid var(--line);
+    margin: 0;
+  }
+
+  /* Inputs inherit the ground shift rather than carrying a shadow. */
+  input,
+  select,
+  textarea,
+  button {
+    font: inherit;
+    color: inherit;
+    border-radius: var(--r);
+  }
+
+  /* The focus ring is a hard requirement. It is never removed, never set to
+     `outline: none`, and it uses the brand colour so it reads as deliberate. */
+  *:focus-visible {
+    outline: 2px solid var(--signal);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background-color: var(--signal-wash);
+    color: var(--text);
+  }
+
+  ::placeholder {
+    color: var(--text-3);
+    opacity: 1;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   The one orchestrated load sequence.
+   Three keyframes, used once per page on load, and then the page is still.
+   No ambient drift, no fade up on every section, no lift on hover.
+   --------------------------------------------------------------------------- */
+
+/* The rail rules draw themselves in from the left. */
+@keyframes rule-draw {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+/* The headline sets. A small clip and opacity reveal, deliberately not a
+   translate on the Y axis, because a slide up on everything is banned. */
+@keyframes set-type {
+  from {
+    opacity: 0;
+    clip-path: inset(0 0 40% 0);
+  }
+  to {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
+  }
+}
+
+/* Evidence rows stamp in. Used for evidence rows only, nothing else. */
+@keyframes stamp-in {
+  from {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Utilities
+   --------------------------------------------------------------------------- */
+@layer utilities {
+  /* --- the load sequence, applied by hand where it belongs --- */
+
+  /* fill mode is `backwards` rather than `both` on purpose: `both` would hold
+     the end state forever, and a held clip-path can shave a descender on a
+     tight line box. `backwards` applies the start state before the animation
+     and then hands the element back to its own styles. */
+  .rule-draw {
+    transform-origin: left center;
+    animation: rule-draw 520ms cubic-bezier(0.2, 0.7, 0.2, 1) backwards;
+  }
+
+  .set-type {
+    animation: set-type 420ms cubic-bezier(0.2, 0.7, 0.2, 1) backwards;
+  }
+
+  .stamp-in {
+    animation: stamp-in 140ms cubic-bezier(0.2, 0.7, 0.2, 1) backwards;
+  }
+
+  /* Stagger by index. A parent sets style="--i: 0", "--i: 1" and so on, or
+     sets --stagger to change the step. This MUST stay below the three classes
+     above, because the `animation` shorthand resets animation-delay to zero
+     and equal specificity means the later rule wins. */
+  .seq {
+    animation-delay: calc(var(--i, 0) * var(--stagger, 60ms));
+  }
+
+  /* --- full bleed hairline --- */
+
+  /* A 1px rule that runs edge to edge regardless of the container it sits in,
+     like a ledger page. html has overflow-x: clip so the 100vw does not create
+     a horizontal scrollbar. */
+  .rule-full {
+    display: block;
+    width: 100vw;
+    max-width: 100vw;
+    margin-inline: calc(50% - 50vw);
+    height: var(--hairline);
+    border: 0;
+    padding: 0;
+    flex: none;
+    background-color: var(--line);
+  }
+
+  .rule-full-strong {
+    display: block;
+    width: 100vw;
+    max-width: 100vw;
+    margin-inline: calc(50% - 50vw);
+    height: var(--hairline);
+    border: 0;
+    padding: 0;
+    flex: none;
+    background-color: var(--line-strong);
+  }
+
+  /* An inset rule, for inside a panel where a full bleed would be wrong. */
+  .rule-inset {
+    display: block;
+    width: 100%;
+    height: var(--hairline);
+    border: 0;
+    background-color: var(--line);
+  }
+
+  /* --- the evidence margin rail --- */
+
+  /* Content column plus the margin where the sources live. Each claim in a
+     verdict ties by a hairline into this rail. Below 1100px the rail folds
+     away and the citations move inline under the claim they support. */
+  .rail {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) var(--rail-w);
+    column-gap: var(--rail-gap);
+    align-items: start;
+  }
+
+  .rail-main {
+    min-width: 0;
+    grid-column: 1;
+  }
+
+  .rail-aside {
+    grid-column: 2;
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: var(--text-12);
+    color: var(--text-3);
+    border-left: var(--hairline) solid var(--line);
+    padding-left: calc(var(--rail-gap) / 2);
+  }
+
+  /* The hairline that ties a claim into its source in the margin. */
+  .rail-tie {
+    position: relative;
+  }
+
+  .rail-tie::after {
+    content: "";
+    position: absolute;
+    top: 0.7em;
+    left: 100%;
+    width: var(--rail-gap);
+    height: var(--hairline);
+    background-color: var(--line);
+    pointer-events: none;
+  }
+
+  @media (max-width: 1099px) {
+    .rail {
+      grid-template-columns: minmax(0, 1fr);
+      row-gap: 0.75rem;
+    }
+
+    .rail-main,
+    .rail-aside {
+      grid-column: 1;
+    }
+
+    .rail-aside {
+      border-left: 0;
+      padding-left: 0;
+      border-top: var(--hairline) solid var(--line);
+      padding-top: 0.5rem;
+    }
+
+    .rail-tie::after {
+      content: none;
+    }
+  }
+
+  /* --- type helpers --- */
+
+  /* Every code, clause id, docket number, dollar figure, timestamp and address
+     in Ombuds goes through this. Those are the things a reader checks character
+     by character, so they get the mono and tabular figures. */
+  .mono {
+    font-family: var(--font-mono);
+    font-feature-settings: "liga" 0;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0;
+  }
+
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .display {
+    font-family: var(--font-display);
+    font-weight: var(--display-weight);
+    font-stretch: var(--display-width);
+    font-variation-settings: "wdth" 82;
+    line-height: var(--lh-tight);
+    letter-spacing: -0.01em;
+  }
+
+  /* Status chip. The one place a 999px radius is allowed, and only for case
+     status. Everything else is 2px. */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    border-radius: var(--r-pill);
+    border: var(--hairline) solid var(--line-strong);
+    padding: 0.125rem 0.625rem;
+    font-family: var(--font-mono);
+    font-size: var(--text-12);
+    line-height: 1.6;
+    white-space: nowrap;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Reduced motion.
+   If the reader has asked for less movement, the load sequence collapses to
+   nothing. Kept last so it beats everything above it.
+   --------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    animation-delay: 0ms !important;
+    scroll-behavior: auto !important;
+
+    /* Neutralise the stagger so nothing waits its turn. */
+    --stagger: 0ms !important;
+    --i: 0 !important;
+  }
+}

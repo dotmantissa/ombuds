@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" role="img" aria-labelledby="ombuds-favicon-title">
+  <title id="ombuds-favicon-title">Ombuds</title>
+  <!--
+    Favicon cut of the Ombuds mark, tuned for 16 to 32px.
+    Heavier strokes, a wider slot, a bigger fold radius and more space between the two legs of
+    the rule than the canonical mark, so the fold still reads when the whole tile is 16 pixels.
+    The ring also sits closer to the edge of the box, because browsers add no padding of their own.
+    Measured at a 16px render: ring stroke 1.6px, rule stroke 1.47px, gap between the legs
+    2.53px, slot 2.69px.
+  -->
+  <style>
+    /* The tab strip is near white in light themes and near black in dark ones, so the mark
+       switches between the two brand values that hold contrast on each. */
+    svg { color: #8a1ee6; }
+    @media (prefers-color-scheme: dark) { svg { color: #c285ff; } }
+  </style>
+  <g stroke="currentColor" stroke-linecap="butt" stroke-linejoin="round">
+    <path d="M3.745 16.9A9.6 9.6 0 1 0 2.463 13.1" stroke-width="2.4"/>
+    <path d="M1.625 15H13.8a3 3 0 0 0 0-6H6.4" stroke-width="2.2"/>
+  </g>
+</svg>

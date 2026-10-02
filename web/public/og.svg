@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630" fill="none" role="img" aria-labelledby="ombuds-og-title">
+  <title id="ombuds-og-title">Ombuds. Your insurer wrote the rule. We read it back to them.</title>
+  <!--
+    Open Graph card, 1200x630. Dark ground, two full bleed hairlines like a ledger page, with the
+    first 192px of the upper rule carrying the brand so there is one piece of colour above the
+    fold. The mark and the word are the same drawn geometry as logo.svg, so nothing depends on a
+    webfont. Only the two lines of copy and the standfirst are <text>, on a system stack, which
+    is fine because a platform rasterises this card before anyone sees it.
+  -->
+  <rect width="1200" height="630" fill="#1b191f"/>
+  <g stroke-linecap="butt">
+    <path d="M0 96H1200" stroke="#3a3542" stroke-width="2"/>
+    <path d="M0 96H192" stroke="#a238ff" stroke-width="4"/>
+    <path d="M0 534H1200" stroke="#3a3542" stroke-width="2"/>
+  </g>
+  <g transform="translate(96 136)" fill="none" stroke-linecap="butt" stroke-linejoin="round">
+    <g transform="translate(0 7.35)">
+      <g transform="translate(-4.65 -12) scale(3)" stroke="#c285ff">
+        <path d="M3.654 16.325A9.4 9.4 0 1 0 2.662 13.075" stroke-width="2.1"/>
+        <path d="M1.905 14.7H14.3a2.7 2.7 0 0 0 0-5.4H5.8" stroke-width="1.85"/>
+      </g>
+      <g transform="translate(84.7 0)" stroke="#f4f2f7" stroke-width="7.4">
+          <g transform="translate(0 0)"><path d="M18 3C28.01 3 32.3 8.88 32.3 24C32.3 39.12 28.01 45 18 45C7.99 45 3.7 39.12 3.7 24C3.7 8.88 7.99 3 18 3Z"/></g>
+          <g transform="translate(38.6 0)"><path d="M3.7 48V12.5"/><path d="M3.7 20.5C3.7 17.2 6.2 16.1 11.1 16.1C16 16.1 18.5 17.2 18.5 20.5V48"/><path d="M18.5 20.5C18.5 17.2 21 16.1 25.9 16.1C30.8 16.1 33.3 17.2 33.3 20.5V48"/></g>
+          <g transform="translate(79 0)"><path d="M3.7 -2V48"/><path d="M3.7 15.7H12.2C18.3 15.7 22.8 19.5 22.8 25.1V35.4C22.8 41 18.3 44.8 12.2 44.8H3.7"/></g>
+          <g transform="translate(108.3 0)"><path d="M3.7 12.5V36.3C3.7 41.5 7.6 44.8 12.5 44.8C17.4 44.8 21.3 41.5 21.3 36.3V12.5"/></g>
+          <g transform="translate(136.1 0)"><path d="M22.8 -2V48"/><path d="M22.8 15.7H14.3C8.2 15.7 3.7 19.5 3.7 25.1V35.4C3.7 41 8.2 44.8 14.3 44.8H22.8"/></g>
+          <g transform="translate(165.4 0)"><path d="M17 20.5C17 17.6 14.6 15.9 10.5 15.9C6.4 15.9 3.7 17.8 3.7 21.3C3.7 24.6 6.3 26.2 11 27.6C15.1 28.8 17.4 30.8 17.4 34.4C17.4 38.3 14.6 44.6 10.2 44.6C6.3 44.6 3.9 42.8 3.9 39.8"/></g>
+      </g>
+    </g>
+  </g>
+  <g font-family="Archivo, 'Archivo Condensed', 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="58" font-weight="650" font-stretch="88%" letter-spacing="-0.6" fill="#f4f2f7">
+    <text x="96" y="322">Your insurer wrote the rule.</text>
+    <text x="96" y="390">We read it back to them.</text>
+  </g>
+  <text x="96" y="464" font-family="'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="24" fill="#a39daf">Adjudicated by independent validators on GenLayer</text>
+</svg>

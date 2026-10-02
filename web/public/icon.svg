@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" fill="none" role="img" aria-labelledby="ombuds-icon-title">
+  <title id="ombuds-icon-title">Ombuds</title>
+  <!--
+    512 app icon, for apple-icon and PWA use. Brand ground, mark reversed to white.
+    Canonical mark geometry, scaled: the 24 unit grid is mapped to 352px and centred, which puts
+    the mark's ink inside a 307px circle at the centre of the tile. That sits well within the
+    central 80 percent that a maskable icon is allowed to rely on, so the platform can round,
+    squircle or circle crop this without clipping the seal.
+  -->
+  <rect width="512" height="512" fill="#a238ff"/>
+  <g transform="translate(80 80) scale(14.6667)" stroke="#ffffff" stroke-linecap="butt" stroke-linejoin="round">
+    <path d="M3.654 16.325A9.4 9.4 0 1 0 2.662 13.075" stroke-width="2.1"/>
+    <path d="M1.905 14.7H14.3a2.7 2.7 0 0 0 0-5.4H5.8" stroke-width="1.85"/>
+  </g>
+</svg>
