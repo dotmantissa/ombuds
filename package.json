@@ -16,7 +16,8 @@
     "deploy:contracts": "node deploy/deploy.mjs",
     "seed:registry": "node deploy/seed_registry.mjs",
     "verify:sources": "python3 scripts/verify_sources.py",
-    "test": "npm run lint:contracts && npm run test:contracts"
+    "test": "npm run lint:contracts && npm run test:contracts",
+    "env:sync": "node -e \"const fs=require('fs');const keep=l=>!/^VERCEL_/.test(l);fs.writeFileSync('web/.env.local',fs.readFileSync('.env','utf8').split('\\n').filter(keep).join('\\n'),{mode:0o600});console.log('web/.env.local refreshed from .env')\""
   },
   "dependencies": {
     "dotenv": "^16.4.7",

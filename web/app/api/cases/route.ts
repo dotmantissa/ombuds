@@ -2,11 +2,12 @@ import { z } from 'zod';
 
 import { buildCaseRecord } from '@/lib/deident';
 import { insertCase, listCasesForMember, recordSourceSnapshot } from '@/lib/db';
-import { ombudsCourtAddress, writeContract } from '@/lib/genlayer';
+import { ombudsCourtAddress, ReceiptTimeoutError, writeContract } from '@/lib/genlayer';
 import { authErrorResponse, requireMember } from '@/lib/privy';
 import { parseUsdToAtto } from '@/lib/bands';
 
 export const dynamic = 'force-dynamic';
+export const maxDuration = 300;
 
 const Body = z.object({
   planId: z.string().min(1),
@@ -91,22 +92,43 @@ export async function POST(req: Request) {
 
   const record = built.record;
 
-  const write = await writeContract({
-    address: ombudsCourtAddress(),
-    functionName: 'file_case',
-    args: [
-      record.plan_id,
-      record.family_id,
-      record.state,
-      record.cpt_codes.join('|'),
-      record.icd10_codes.join('|'),
-      record.denial_reason_code,
-      record.denial_rationale,
-      record.service_month,
-      record.disputed_amount_atto.toString(),
-      record.evidence_sha256,
-    ],
-  });
+  let write;
+  try {
+    write = await writeContract({
+      address: ombudsCourtAddress(),
+      functionName: 'file_case',
+      args: [
+        record.plan_id,
+        record.family_id,
+        record.state,
+        record.cpt_codes.join('|'),
+        record.icd10_codes.join('|'),
+        record.denial_reason_code,
+        record.denial_rationale,
+        record.service_month,
+        record.disputed_amount_atto.toString(),
+        record.evidence_sha256,
+      ],
+    });
+  } catch (err) {
+    if (err instanceof ReceiptTimeoutError) {
+      // The docket number comes back in the receipt, so without a receipt there
+      // is no docket to hand over and nothing is written to the index. The
+      // filing itself is on chain and the docket page reads from the contract.
+      return Response.json(
+        {
+          pending: true,
+          docket: null,
+          txHash: err.txHash,
+          message:
+            'The filing is on chain but the court had not issued a docket number by the time ' +
+            'this request had to end. It appears on the docket page shortly.',
+        },
+        { status: 202 },
+      );
+    }
+    throw err;
+  }
 
   if (!write.ok) {
     return Response.json(

@@ -338,9 +338,46 @@ export interface WriteResult {
   error: string | null;
 }
 
-/** How long to wait for a receipt. Six minutes at a three second interval. */
+/**
+ * How long to wait for a receipt.
+ *
+ * This ceiling is set by the host, not by consensus. A Vercel function is killed
+ * at 300 seconds, and when the host does the killing the member gets a gateway
+ * error with no transaction hash in it, which is the one thing they actually
+ * need. So the wait gives up on its own at 255 seconds and leaves the remaining
+ * budget for submitting, reading the verdict back and writing the index row.
+ *
+ * `WAIT_RETRIES` is deliberately set past the deadline. The SDK should never be
+ * the thing that gives up first, because then its error, and not ours, is what
+ * the caller has to interpret.
+ */
 export const WAIT_INTERVAL_MS = 3000;
-export const WAIT_RETRIES = 120;
+export const WAIT_RETRIES = 100;
+export const WAIT_DEADLINE_MS = 255_000;
+
+/**
+ * The wait gave up before consensus landed.
+ *
+ * This is not a failed write. The transaction is on chain and the validators are
+ * still working, so it carries the hash and callers turn it into a "still
+ * sitting" answer rather than an error. Every verdict is re-read from the
+ * contract rather than parsed out of a receipt, so a case page shows the result
+ * as soon as it exists whether or not anybody was still holding a request open
+ * when it landed.
+ */
+export class ReceiptTimeoutError extends Error {
+  readonly txHash: TransactionHash;
+
+  constructor(txHash: TransactionHash) {
+    super(
+      `The panel has not reached a decision in the ${Math.round(WAIT_DEADLINE_MS / 1000)} ` +
+        'seconds this request can stay open. The transaction is on chain and consensus is ' +
+        `still running. Transaction ${txHash}.`,
+    );
+    this.name = 'ReceiptTimeoutError';
+    this.txHash = txHash;
+  }
+}
 
 /**
  * Submit a write and wait for the receipt.
@@ -365,12 +402,28 @@ export async function writeContract(
 
   const txHash = submitted as TransactionHash;
 
-  const receipt = await client.waitForTransactionReceipt({
-    hash: txHash,
-    status: TransactionStatus.ACCEPTED,
-    interval: WAIT_INTERVAL_MS,
-    retries: WAIT_RETRIES,
+  // Our own deadline decides when to stop waiting, so that a real transport
+  // failure from the SDK still propagates as itself instead of being reported
+  // to a member as "still running".
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new ReceiptTimeoutError(txHash)), WAIT_DEADLINE_MS);
   });
+
+  let receipt: GenLayerTransaction;
+  try {
+    receipt = await Promise.race([
+      client.waitForTransactionReceipt({
+        hash: txHash,
+        status: TransactionStatus.ACCEPTED,
+        interval: WAIT_INTERVAL_MS,
+        retries: WAIT_RETRIES,
+      }),
+      deadline,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 
   const outcome = readExecutionOutcome(receipt);
 

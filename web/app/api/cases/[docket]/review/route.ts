@@ -1,5 +1,10 @@
 import { updateCaseStatus } from '@/lib/db';
-import { ombudsCourtAddress, readContract, writeContract } from '@/lib/genlayer';
+import {
+  ombudsCourtAddress,
+  readContract,
+  ReceiptTimeoutError,
+  writeContract,
+} from '@/lib/genlayer';
 import { authErrorResponse, requireMember } from '@/lib/privy';
 
 export const dynamic = 'force-dynamic';
@@ -34,12 +39,33 @@ export async function POST(req: Request, context: { params: Promise<{ docket: st
   });
   const bond = BigInt(config.review_bond_atto ?? '0');
 
-  const write = await writeContract({
-    address: court,
-    functionName: 'request_review',
-    args: [docket],
-    value: bond,
-  });
+  let write;
+  try {
+    write = await writeContract({
+      address: court,
+      functionName: 'request_review',
+      args: [docket],
+      value: bond,
+    });
+  } catch (err) {
+    if (err instanceof ReceiptTimeoutError) {
+      // The status is deliberately left alone. We know the escalation was sent,
+      // not that the bond was accepted, and claiming UNDER_REVIEW before the
+      // contract has said so would be the index inventing a fact.
+      return Response.json(
+        {
+          pending: true,
+          docket,
+          txHash: err.txHash,
+          message:
+            'The escalation is on chain and a fresh panel is still reading the case. This ' +
+            'page shows the outcome once the validators agree.',
+        },
+        { status: 202 },
+      );
+    }
+    throw err;
+  }
 
   if (!write.ok) {
     return Response.json(

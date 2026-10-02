@@ -1,5 +1,10 @@
 import { recordVerdict, updateCaseStatus } from '@/lib/db';
-import { ombudsCourtAddress, readContract, writeContract } from '@/lib/genlayer';
+import {
+  ombudsCourtAddress,
+  readContract,
+  ReceiptTimeoutError,
+  writeContract,
+} from '@/lib/genlayer';
 import { authErrorResponse, requireMember } from '@/lib/privy';
 
 export const dynamic = 'force-dynamic';
@@ -29,11 +34,34 @@ export async function POST(req: Request, context: { params: Promise<{ docket: st
   const court = ombudsCourtAddress();
   await updateCaseStatus(docket, 'ADJUDICATING').catch(() => undefined);
 
-  const write = await writeContract({
-    address: court,
-    functionName: 'adjudicate',
-    args: [docket],
-  });
+  let write;
+  try {
+    write = await writeContract({
+      address: court,
+      functionName: 'adjudicate',
+      args: [docket],
+    });
+  } catch (err) {
+    if (err instanceof ReceiptTimeoutError) {
+      // The case stays ADJUDICATING, which is exactly the truth: the panel has it
+      // and has not finished. The case page reads the verdict off the contract,
+      // so it shows up there whether or not this request lived long enough to
+      // see it land.
+      return Response.json(
+        {
+          pending: true,
+          docket,
+          txHash: err.txHash,
+          message:
+            'The panel is still sitting. The case stays open and the verdict appears on its ' +
+            'page as soon as the validators agree.',
+        },
+        { status: 202 },
+      );
+    }
+    await updateCaseStatus(docket, 'FILED').catch(() => undefined);
+    throw err;
+  }
 
   if (!write.ok) {
     await updateCaseStatus(docket, 'FILED').catch(() => undefined);

@@ -1,7 +1,12 @@
 import { z } from 'zod';
 
 import { recordPoolEvent } from '@/lib/db';
-import { advancePoolAddress, readContract, writeContract } from '@/lib/genlayer';
+import {
+  advancePoolAddress,
+  readContract,
+  ReceiptTimeoutError,
+  writeContract,
+} from '@/lib/genlayer';
 import { authErrorResponse, requireMember } from '@/lib/privy';
 
 export const dynamic = 'force-dynamic';
@@ -60,11 +65,31 @@ export async function POST(req: Request) {
     return Response.json({ error: quote.reason, quote }, { status: 409 });
   }
 
-  const write = await writeContract({
-    address: pool,
-    functionName: 'advance',
-    args: [body.docket],
-  });
+  let write;
+  try {
+    write = await writeContract({
+      address: pool,
+      functionName: 'advance',
+      args: [body.docket],
+    });
+  } catch (err) {
+    if (err instanceof ReceiptTimeoutError) {
+      // Nothing is recorded as advanced. The pool's own ledger is the record and
+      // the pool page reads it from the contract.
+      return Response.json(
+        {
+          pending: true,
+          docket: body.docket,
+          txHash: err.txHash,
+          message:
+            'The advance is on chain and had not settled by the time this request had to ' +
+            'end. The pool ledger shows it once it does.',
+        },
+        { status: 202 },
+      );
+    }
+    throw err;
+  }
 
   if (!write.ok) {
     return Response.json(

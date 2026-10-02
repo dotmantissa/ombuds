@@ -119,7 +119,11 @@ export function FileWizard({
     setError(null);
     try {
       const sources = [rule.bulletinUrl, rule.cmsSourceUrl].filter((u) => u !== '');
-      const result = await call<{ docket: string | null; txHash: string }>('/api/cases', {
+      const result = await call<{
+        docket: string | null;
+        txHash: string;
+        message?: string;
+      }>('/api/cases', {
         method: 'POST',
         body: JSON.stringify({
           planId: rule.planId,
@@ -138,7 +142,12 @@ export function FileWizard({
       if (result.docket !== null) {
         router.push(`/case/${result.docket}`);
       } else {
-        setError('The filing landed but we could not read the docket number back. Check the docket page.');
+        // A 202 comes back when consensus outlasted the request. The server
+        // explains that better than a generic line can, so prefer what it said.
+        setError(
+          result.message ??
+            'The filing landed but we could not read the docket number back. Check the docket page.',
+        );
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'That filing did not go through.');

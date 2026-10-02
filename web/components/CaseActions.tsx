@@ -7,6 +7,12 @@ import { Banknote, Gavel, Loader2, Scale } from 'lucide-react';
 import { Panel } from '@/components/ui/primitives';
 import { useApi } from '@/lib/useApi';
 
+/** What a write route answers with when the chain outlasted the request. */
+interface Pending {
+  pending?: boolean;
+  message?: string;
+}
+
 interface Props {
   docket: string;
   hasVerdict: boolean;
@@ -48,16 +54,22 @@ export function CaseActions({
     setError(null);
     setNote(null);
     try {
+      let result: Pending;
       if (kind === 'adjudicate') {
         setNote('The panel is reading the sources. This genuinely takes a few minutes.');
-        await call(`/api/cases/${docket}/adjudicate`, { method: 'POST' });
+        result = await call<Pending>(`/api/cases/${docket}/adjudicate`, { method: 'POST' });
       } else if (kind === 'advance') {
-        await call('/api/pool', { method: 'POST', body: JSON.stringify({ docket }) });
+        result = await call<Pending>('/api/pool', {
+          method: 'POST',
+          body: JSON.stringify({ docket }),
+        });
       } else {
-        await call(`/api/cases/${docket}/review`, { method: 'POST' });
+        result = await call<Pending>(`/api/cases/${docket}/review`, { method: 'POST' });
       }
       router.refresh();
-      setNote(null);
+      // Consensus can outlast the request. That is not a failure, so it is said
+      // plainly and left on screen instead of being dressed up as an error.
+      setNote(result?.pending === true ? (result.message ?? null) : null);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'That did not work.');
       setNote(null);
