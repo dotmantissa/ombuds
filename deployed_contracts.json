@@ -3,7 +3,7 @@
   "chainId": 61999,
   "rpcUrl": "https://studio.genlayer.com/api",
   "deployer": "0xBC1399c55538eC034d4Da550C03c34Ae0C357f53",
-  "deployedAt": "2026-10-01T13:11:17.640Z",
+  "deployedAt": "2026-10-02T03:15:38.058Z",
   "terms": {
     "minConfidence": 70,
     "reviewBondAtto": "250000000000000000",
@@ -21,16 +21,16 @@
   },
   "contracts": {
     "PlanRegistry": {
-      "address": "0x129E0Cc0DcAdb23755f70361C89BB58F420c538f",
-      "txHash": "0x9c0fbbd2a43cec27648c44db4706ec5aa6a441f203b8ecf55062635ad1dda81e"
+      "address": "0x0905d1C488c626A1016Cd219E69141a141Cc0bD2",
+      "txHash": "0x8b640ea74dcaeaf6c18e895afad451a89eeb298620723f6f9db1356475c4c62f"
     },
     "OmbudsCourt": {
-      "address": "0x736a77515dfEe888D3baa52Dad6BCb6861D869BD",
-      "txHash": "0x2945348b3d8926acf92c91acb933eefad9aa2fd31e77c52ae20c19e09ba05dd7"
+      "address": "0xeD1d80EFba9B2354feA56bD9a4aE83049dc85e8F",
+      "txHash": "0x3ab2331bf9eea8c0dde2ca726433a577f6d71c463a5f5cd3759f286605cf8797"
     },
     "AdvancePool": {
-      "address": "0x22c2827B2745385196E8B77D7721859D2CC7551C",
-      "txHash": "0xde5ca6ca0f5dda51051cb982efdaa85c7126edb67e4d2d1d3e3b663bc7dce255"
+      "address": "0x6b59986464D2D82F8fE67Bc17383d2f21579CDC2",
+      "txHash": "0xcdb9b48f3337c5e0eceeca4c7f3200af0fb63b5889331f44a8b6ca6624e80443"
     }
   }
 }
