@@ -172,33 +172,31 @@ def register_bariatric(contract, *, effective_from="2026-01-01", effective_to="2
 
 
 @pytest.fixture
-def court_stack(direct_deploy, direct_vm, direct_owner):
-    """A registry with the bariatric rule registered, plus a court pointed at it."""
-    direct_vm.sender = direct_owner
-    direct_vm.warp("2026-06-15T10:00:00Z")
-    reg = direct_deploy(CONTRACTS["registry"])
-    register_bariatric(reg)
-    court = direct_deploy(CONTRACTS["court"], str(reg.address), 70, str(ATTO // 4))
-    return reg, court
+def make_court(direct_deploy, direct_vm, direct_owner):
+    """Build a court whose registry is stubbed, since direct mode runs one contract.
+
+    Pass a lapse_reason to make the stubbed registry report the rule as unusable, which
+    is how the gatekeeping tests work.
+    """
+
+    def build(*, lapse_reason: str = "", rule: dict | None = None, min_confidence: int = 70):
+        direct_vm.sender = direct_owner
+        direct_vm.warp("2026-06-15T10:00:00Z")
+        stub = registry_stub(lapse_reason=lapse_reason, rule=rule)
+        install_stubs(direct_vm, stub)
+        contract = direct_deploy(
+            CONTRACTS["court"], REGISTRY_ADDRESS, min_confidence, str(ATTO // 4)
+        )
+        return contract, stub
+
+    return build
 
 
 @pytest.fixture
-def full_stack(court_stack, direct_deploy, direct_vm, direct_owner):
-    """Registry, court and pool, wired the way deploy/deploy.mjs wires them."""
-    reg, court = court_stack
-    direct_vm.sender = direct_owner
-    pool = direct_deploy(
-        CONTRACTS["pool"],
-        str(court.address),
-        3500,
-        1200,
-        7000,
-        ",".join(
-            str(v) for v in (ATTO // 4, ATTO // 2, ATTO, ATTO * 2, ATTO * 3, ATTO * 4)
-        ),
-    )
-    court.set_pool(str(pool.address))
-    return reg, court, pool
+def court(make_court):
+    """A court with a live bariatric rule behind it."""
+    contract, _ = make_court()
+    return contract
 
 
 CLEAN_RATIONALE = (
@@ -220,3 +218,131 @@ def file_clean_case(court, *, disputed_atto=12_000 * ATTO, evidence=None):
         str(disputed_atto),
         evidence or ("a" * 64),
     )
+
+# ---------------------------------------------------------------- cross contract stubs
+#
+# Direct mode runs exactly one contract per VM, so a court cannot be deployed next to a
+# real registry here. GenVM also forbids a cross contract call from inside a nondet block,
+# which is why both contracts read their neighbour before the nondet work starts, and why
+# a stub at the gl_call boundary is a faithful stand in rather than a shortcut.
+#
+# The genuine three contract wiring is exercised in tests/integration against studionet.
+
+
+class ContractStub:
+    """Answers CallContract and PostMessage for one address."""
+
+    def __init__(self, address: str):
+        self.address = address.lower()
+        self.views: dict = {}
+        self.calls: list = []
+
+    def view(self, method: str, value):
+        """Register a return value, or a callable taking the positional args."""
+        self.views[method] = value
+        return self
+
+
+def install_stubs(vm, *stubs: ContractStub) -> None:
+    """Install a gl_call hook that serves the given contract stubs.
+
+    The genlayer package only exists once gltest has loaded the SDK, which happens when a
+    contract is deployed. The hook runs later still, during contract execution, so the
+    calldata codec is imported inside it rather than at module or fixture scope.
+    """
+    by_address = {stub.address: stub for stub in stubs}
+
+    def hook(_vm, request):
+        from genlayer.py import calldata as _calldata
+
+        for key in ("CallContract", "PostMessage"):
+            if key not in request:
+                continue
+            payload = request[key]
+            raw = payload.get("address")
+            address = _address_text(raw)
+            stub = by_address.get(address)
+            if stub is None:
+                return None
+            cd = payload.get("calldata") or {}
+            method = cd.get("method", "")
+            args = list(cd.get("args", []))
+            stub.calls.append((method, args))
+            if key == "PostMessage":
+                # An emitted write is fire and forget. Nothing is returned to the caller.
+                return bytes([0]) + _calldata.encode(None)
+            if method not in stub.views:
+                return bytes([1]) + f"stub has no view '{method}'".encode("utf-8")
+            answer = stub.views[method]
+            if callable(answer):
+                answer = answer(*args)
+            return bytes([0]) + _calldata.encode(answer)
+        return None
+
+    vm._gl_call_hook = hook
+
+
+def _address_text(raw) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw.lower()
+    as_bytes = bytes(raw) if hasattr(raw, "__bytes__") else None
+    if as_bytes is not None:
+        return "0x" + as_bytes.hex()
+    return str(raw).lower()
+
+
+REGISTRY_ADDRESS = "0x" + "11" * 20
+COURT_ADDRESS = "0x" + "22" * 20
+
+BARIATRIC_RULE = {
+    "plan_id": "AETNA-COMMERCIAL-BARIATRIC",
+    "insurer": "Aetna",
+    "plan_line": "Commercial",
+    "family_id": "bariatric_surgery",
+    "bulletin_number": "0157",
+    "bulletin_title": "Obesity Surgery",
+    "bulletin_url": AETNA_0157,
+    "fetch_mode": "html",
+    "state": "US",
+    "effective_from": "2026-01-01",
+    "effective_to": "2027-01-01",
+    "sbc_hash": "",
+    "cms_source_url": CMS_100_1,
+    "cms_display_id": "100.1",
+    "guideline_url": "https://asmbs.org/resources/metabolic-and-bariatric-surgery/",
+    "clause_sections": AETNA_SECTIONS.split("|"),
+    "content_hash": "",
+    "previous_content_hash": "",
+    "last_refreshed": "",
+    "registered_at": "2026-01-01T00:00:00Z",
+    "refresh_count": 0,
+    "revision_count": 0,
+    "retired": False,
+    "active": True,
+    "as_of": "2026-06-15",
+}
+
+
+def registry_stub(*, lapse_reason: str = "", rule: dict | None = None) -> ContractStub:
+    body = dict(rule or BARIATRIC_RULE)
+    known = str(body["plan_id"])
+    missing = f"No rule is registered for plan '{{}}'."
+
+    def lapse(plan_id=""):
+        if plan_id != known:
+            return missing.format(plan_id)
+        return lapse_reason
+
+    def rule_for(plan_id=""):
+        if plan_id != known:
+            raise AssertionError(f"stub was asked for an unregistered plan '{plan_id}'")
+        return body
+
+    stub = ContractStub(REGISTRY_ADDRESS)
+    stub.view("lapse_reason", lapse)
+    stub.view("rule_for", rule_for)
+    stub.view("is_rule_active", lambda plan_id="": plan_id == known and lapse_reason == "")
+    return stub
+

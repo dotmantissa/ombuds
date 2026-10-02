@@ -1,0 +1,919 @@
+"""OmbudsCourt: filing, the PHI tripwire, adjudication and the validator comparison rule.
+
+The tests that matter most here are the ones about refusal and disagreement. A court that
+happily writes a verdict is not interesting. A court that refuses a patient identifier,
+refuses a lapsed rule, and refuses to agree with a validator that read a different clause
+is the whole product.
+"""
+
+import json
+
+import pytest
+
+from conftest import (
+    AETNA_0157,
+    ATTO,
+    CLEAN_RATIONALE,
+    CMS_100_1,
+    file_clean_case,
+    real_quote,
+    serve,
+    verdict_json,
+)
+
+PROMPT_MATCH = r"(?s).*adjudicating a denied health insurance claim.*"
+
+
+def arm(direct_vm, aetna, cms, answer: str) -> None:
+    """Serve both real documents and one model answer."""
+    serve(direct_vm, AETNA_0157, aetna)
+    serve(direct_vm, CMS_100_1, cms)
+    direct_vm.mock_llm(PROMPT_MATCH, answer)
+
+
+# ------------------------------------------------------------------- filing
+
+def test_files_a_clean_case_and_reads_it_back(court, direct_vm, direct_alice):
+    direct_vm.sender = direct_alice
+
+    docket = file_clean_case(court)
+    assert docket == "OMB-2026-000001"
+
+    case = court.get_case(docket)
+    assert case["plan_id"] == "AETNA-COMMERCIAL-BARIATRIC"
+    assert case["family_id"] == "bariatric_surgery"
+    assert case["state"] == "TX"
+    assert case["cpt_codes"] == ["43644", "43775"]
+    assert case["icd10_codes"] == ["E66.01", "Z68.41"]
+    assert case["service_month"] == "2026-04"
+    assert case["status"] == "FILED"
+    assert case["filer"] == str(direct_alice)
+    assert case["has_verdict"] is False
+    assert int(case["disputed_atto"]) == 12_000 * ATTO
+
+
+def test_dockets_increment_and_are_listed_per_filer(
+    court, direct_vm, direct_alice, direct_bob
+):
+    direct_vm.sender = direct_alice
+    first = file_clean_case(court)
+    second = file_clean_case(court)
+    direct_vm.sender = direct_bob
+    third = file_clean_case(court)
+
+    assert [first, second, third] == ["OMB-2026-000001", "OMB-2026-000002", "OMB-2026-000003"]
+    assert court.cases_for_filer(str(direct_alice)) == [first, second]
+    assert court.cases_for_filer(str(direct_bob)) == [third]
+    assert court.cases_for_filer("0x" + "9" * 40) == []
+
+
+def test_court_stats_track_filings(court, direct_vm, direct_alice):
+    direct_vm.sender = direct_alice
+    file_clean_case(court, disputed_atto=1_000 * ATTO)
+    file_clean_case(court, disputed_atto=2_500 * ATTO)
+
+    stats = court.court_stats()
+    assert stats["case_count"] == 2
+    assert stats["verdict_count"] == 0
+    assert stats["statuses"]["FILED"] == 2
+    assert int(stats["total_disputed_atto"]) == 3_500 * ATTO
+
+
+# ------------------------------------------------------- the PHI tripwire
+
+@pytest.mark.parametrize(
+    "rationale,kind",
+    [
+        ("Denied. Member ID W123456789 is not eligible for this benefit.", "MEMBER_ID"),
+        ("Denied. Call us on 415-555-0199 to discuss this decision.", "PHONE"),
+        ("Denied. Write to appeals@insurer.example.com within thirty days.", "EMAIL"),
+        ("Denied. Service on 03/14/2026 was not covered under the plan.", "FULL_DATE"),
+        ("Denied. Service on 2026-03-14 was not covered under the plan.", "ISO_DATE"),
+        ("Denied. SSN 123-45-6789 does not match our records for this plan.", "SSN"),
+        ("Denied. MRN 88213 shows no prior authorisation on file for this.", "MRN"),
+    ],
+)
+def test_a_patient_identifier_is_refused_at_the_door(
+    court, direct_vm, direct_alice, rationale, kind
+):
+    direct_vm.sender = direct_alice
+
+    with direct_vm.expect_revert(kind):
+        court.file_case(
+            "AETNA-COMMERCIAL-BARIATRIC", "bariatric_surgery", "TX",
+            "43644", "E66.01", "50", rationale, "2026-04", str(5_000 * ATTO), "a" * 64,
+        )
+
+
+def test_the_tripwire_can_be_run_before_filing(court):
+    dirty = "Member ID X12345678 called on 415-555-0199 about 03/14/2026"
+    found = court.phi_scan(dirty)
+    assert "MEMBER_ID" in found
+    assert "PHONE" in found
+    assert "FULL_DATE" in found
+    assert court.phi_scan(CLEAN_RATIONALE) == []
+
+
+def test_the_tripwire_leaves_real_codes_alone(court, direct_vm, direct_alice):
+    """A five digit CPT code and a five digit ZIP look identical. Codes must survive."""
+    direct_vm.sender = direct_alice
+    assert court.phi_scan("Procedure 43644 with diagnosis E66.01 and Z68.41") == []
+    docket = file_clean_case(court)
+    assert court.get_case(docket)["cpt_codes"] == ["43644", "43775"]
+
+
+def test_a_full_service_date_is_refused(court, direct_vm, direct_alice):
+    direct_vm.sender = direct_alice
+    with direct_vm.expect_revert("service_month must be YYYY-MM"):
+        court.file_case(
+            "AETNA-COMMERCIAL-BARIATRIC", "bariatric_surgery", "TX", "43644", "E66.01",
+            "50", CLEAN_RATIONALE, "2026-04-14", str(5_000 * ATTO), "a" * 64,
+        )
+
+
+# --------------------------------------------------------- filing validation
+
+@pytest.mark.parametrize(
+    "cpt,icd,expected",
+    [
+        ("4364", "E66.01", "is not a CPT or HCPCS code"),
+        ("436445", "E66.01", "is not a CPT or HCPCS code"),
+        ("43644", "E6601X9", "is not an ICD-10-CM code"),
+        ("43644", "166.01", "is not an ICD-10-CM code"),
+        ("", "", "at least one CPT or ICD-10 code is required"),
+    ],
+)
+def test_malformed_codes_are_refused(court, direct_vm, direct_alice, cpt, icd, expected):
+    direct_vm.sender = direct_alice
+    with direct_vm.expect_revert(expected):
+        court.file_case(
+            "AETNA-COMMERCIAL-BARIATRIC", "bariatric_surgery", "TX", cpt, icd,
+            "50", CLEAN_RATIONALE, "2026-04", str(5_000 * ATTO), "a" * 64,
+        )
+
+
+def test_a_bad_evidence_hash_is_refused(court, direct_vm, direct_alice):
+    direct_vm.sender = direct_alice
+    with direct_vm.expect_revert("evidence_sha256 must be 64 hex characters"):
+        file_clean_case(court, evidence="nothash")
+
+
+def test_a_zero_disputed_amount_is_refused(court, direct_vm, direct_alice):
+    direct_vm.sender = direct_alice
+    with direct_vm.expect_revert("disputed amount must be above zero"):
+        file_clean_case(court, disputed_atto=0)
+
+
+def test_an_empty_rationale_is_refused(court, direct_vm, direct_alice):
+    direct_vm.sender = direct_alice
+    with direct_vm.expect_revert("denial rationale sentence is required"):
+        court.file_case(
+            "AETNA-COMMERCIAL-BARIATRIC", "bariatric_surgery", "TX", "43644", "E66.01",
+            "50", "   ", "2026-04", str(5_000 * ATTO), "a" * 64,
+        )
+
+
+# ------------------------------------------------- the registry gate on filing
+
+def test_filing_against_a_lapsed_rule_is_refused(make_court, direct_vm, direct_alice):
+    """The registry refuses, and the court repeats the refusal word for word."""
+    court, _ = make_court(
+        lapse_reason=(
+            "The rule for 'AETNA-COMMERCIAL-BARIATRIC' lapsed on 2025-12-31. "
+            "Register the current bulletin before filing against it."
+        )
+    )
+    direct_vm.sender = direct_alice
+    with direct_vm.expect_revert("lapsed on 2025-12-31"):
+        file_clean_case(court)
+
+
+def test_filing_against_an_unregistered_plan_is_refused(court, direct_vm, direct_alice):
+    direct_vm.sender = direct_alice
+    with direct_vm.expect_revert("No rule is registered"):
+        court.file_case(
+            "CIGNA-COMMERCIAL-BARIATRIC", "bariatric_surgery", "TX", "43644", "E66.01",
+            "50", CLEAN_RATIONALE, "2026-04", str(5_000 * ATTO), "a" * 64,
+        )
+
+
+def test_a_family_mismatch_is_refused(court, direct_vm, direct_alice):
+    """The plan covers obesity surgery. Filing a knee case against it is a mistake."""
+    direct_vm.sender = direct_alice
+    with direct_vm.expect_revert("covers 'bariatric_surgery', not 'knee_arthroplasty'"):
+        court.file_case(
+            "AETNA-COMMERCIAL-BARIATRIC", "knee_arthroplasty", "TX", "27447", "M17.0",
+            "50", CLEAN_RATIONALE, "2026-04", str(5_000 * ATTO), "a" * 64,
+        )
+
+
+# ----------------------------------------------------------- adjudication
+
+def test_adjudicates_against_the_real_bulletin(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court)
+
+    quote = real_quote(aetna_0157)
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(quote, recoverable_usd=4200))
+
+    out = court.adjudicate(docket)
+
+    assert out["overturn_recommended"] is True
+    assert out["ground"] == "MEDICAL_NECESSITY"
+    # clause_id is bulletin number plus a slug of a section the registry declared.
+    assert out["clause_id"] == "0157#medically-necessary"
+    assert out["clause_section"] == "Medically Necessary"
+    # $4,200 sits in the band that runs from two thousand to seven and a half thousand.
+    assert out["recoverable_band"] == 2
+    assert out["recoverable_band_label"] == "$2,000 to $7,500"
+    assert out["confidence"] == 86
+    assert out["crosses_confidence_band"] is True
+    assert len(out["digest"]) == 64
+    assert out["panel_round"] == 1
+
+    verdict = court.get_verdict(docket)
+    assert verdict["clause_quote"] in quote
+    assert verdict["bulletin_digest"] != ""
+    assert verdict["cms_digest"] != ""
+    assert court.get_case(docket)["status"] == "VERDICT"
+    assert court.verdict_digest(docket) == out["digest"]
+
+
+def test_citations_are_built_from_the_documents_not_from_the_model(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court)
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(real_quote(aetna_0157)))
+    court.adjudicate(docket)
+
+    citations = court.get_verdict(docket)["citations"]
+    urls = [c["url"] for c in citations]
+    assert AETNA_0157 in urls
+    assert CMS_100_1 in urls
+    bulletin = next(c for c in citations if c["url"] == AETNA_0157)
+    assert bulletin["locator"] == "Medically Necessary"
+    assert len(bulletin["digest"]) == 64
+    assert "Aetna clinical policy bulletin 0157" in bulletin["source"]
+
+
+def test_an_upheld_denial_recovers_nothing(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court)
+    arm(
+        direct_vm, aetna_0157, cms_100_1,
+        verdict_json(real_quote(aetna_0157), overturn=False, recoverable_usd=9000),
+    )
+
+    out = court.adjudicate(docket)
+    assert out["overturn_recommended"] is False
+    # Band is forced to zero when the denial stands, whatever the model said.
+    assert out["recoverable_band"] == 0
+    assert court.court_stats()["overturn_count"] == 0
+
+
+def test_recovery_is_capped_at_the_amount_in_dispute(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court, disputed_atto=900 * ATTO)
+    arm(
+        direct_vm, aetna_0157, cms_100_1,
+        verdict_json(real_quote(aetna_0157), recoverable_usd=250_000),
+    )
+
+    out = court.adjudicate(docket)
+    # Capped at $900, which lands in the 500 to 2,000 band, not the top one.
+    assert out["recoverable_band"] == 1
+    assert out["recoverable_band_label"] == "$500 to $2,000"
+
+
+@pytest.mark.parametrize(
+    "usd,band",
+    [(0, 0), (499, 0), (500, 1), (1999, 1), (2000, 2), (7499, 2),
+     (7500, 3), (24999, 3), (25000, 4), (74999, 4), (75000, 5), (400000, 5)],
+)
+def test_payout_bands_tile_with_no_gaps(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1, usd, band
+):
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court, disputed_atto=500_000 * ATTO)
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(real_quote(aetna_0157), recoverable_usd=usd))
+    assert court.adjudicate(docket)["recoverable_band"] == band
+
+
+def test_grounds_are_counted_per_ground(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    quote = real_quote(aetna_0157)
+
+    first = file_clean_case(court)
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(quote, ground="CODING_ERROR"))
+    court.adjudicate(first)
+
+    second = file_clean_case(court)
+    direct_vm.clear_mocks()
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(quote, ground="CODING_ERROR"))
+    court.adjudicate(second)
+
+    stats = court.court_stats()
+    assert stats["grounds"]["CODING_ERROR"] == 2
+    assert stats["grounds"]["MEDICAL_NECESSITY"] == 0
+    assert stats["verdict_count"] == 2
+    assert stats["overturn_count"] == 2
+
+
+# ----------------------------------------- the anti hallucination clamp
+
+def test_a_fabricated_quote_is_refused(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    """The clamp. A sentence that is not in the document cannot be committed."""
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court)
+    arm(
+        direct_vm, aetna_0157, cms_100_1,
+        verdict_json(
+            "Aetna considers this procedure medically necessary for all members "
+            "regardless of any clinical criterion whatsoever."
+        ),
+    )
+
+    with direct_vm.expect_revert("citation was fabricated"):
+        court.adjudicate(docket)
+
+
+def test_a_section_the_bulletin_does_not_publish_is_refused(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court)
+    arm(
+        direct_vm, aetna_0157, cms_100_1,
+        verdict_json(real_quote(aetna_0157), section="Appendix Q, Secret Criteria"),
+    )
+
+    with direct_vm.expect_revert("not a section this bulletin publishes"):
+        court.adjudicate(docket)
+
+
+def test_a_ground_outside_the_closed_set_is_refused(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court)
+    arm(
+        direct_vm, aetna_0157, cms_100_1,
+        verdict_json(real_quote(aetna_0157), ground="VIBES"),
+    )
+
+    with direct_vm.expect_revert("is not one of the five grounds"):
+        court.adjudicate(docket)
+
+
+def test_a_quote_too_short_to_check_is_refused(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court)
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json("Covered."))
+
+    with direct_vm.expect_revert("too short to verify"):
+        court.adjudicate(docket)
+
+
+def test_empty_reasoning_is_refused(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court)
+    arm(
+        direct_vm, aetna_0157, cms_100_1,
+        verdict_json(real_quote(aetna_0157), reasoning="Yes."),
+    )
+
+    with direct_vm.expect_revert("no readable reasoning"):
+        court.adjudicate(docket)
+
+
+def test_the_model_returning_nonsense_is_an_llm_error(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court)
+    arm(direct_vm, aetna_0157, cms_100_1, json.dumps({"thoughts": "I am not sure"}))
+
+    with direct_vm.expect_revert("[LLM_ERROR]"):
+        court.adjudicate(docket)
+
+
+def test_a_dead_source_is_classified_as_transient(
+    court, direct_vm, direct_alice, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court)
+    serve(direct_vm, AETNA_0157, b"", status=503)
+    serve(direct_vm, CMS_100_1, cms_100_1)
+
+    with direct_vm.expect_revert("[TRANSIENT]"):
+        court.adjudicate(docket)
+
+
+# --------------------------------------- the validator comparison rule
+
+def _adjudicated(court, direct_vm, aetna, cms, answer=None, quote=None):
+    docket = file_clean_case(court)
+    arm(direct_vm, aetna, cms, answer or verdict_json(quote or real_quote(aetna)))
+    court.adjudicate(docket)
+    return docket
+
+
+def test_a_validator_reaching_the_same_reading_agrees(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    # The validator re-runs the whole job against the same documents and the same answer.
+    assert direct_vm.run_validator() is True
+
+
+def test_a_validator_that_flips_the_decision_disagrees(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    quote = real_quote(aetna_0157)
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1, quote=quote)
+
+    # Swap the model answer so the validator's own re-run upholds the denial instead.
+    direct_vm.clear_mocks()
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(quote, overturn=False))
+    assert direct_vm.run_validator() is False
+
+
+def test_a_validator_that_picks_a_different_ground_disagrees(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    quote = real_quote(aetna_0157)
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1, quote=quote)
+
+    direct_vm.clear_mocks()
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(quote, ground="CODING_ERROR"))
+    assert direct_vm.run_validator() is False
+
+
+def test_a_validator_that_cites_a_different_clause_disagrees(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    """clause_id is the clamp, and it is compared exactly."""
+    direct_vm.sender = direct_alice
+    quote = real_quote(aetna_0157)
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1, quote=quote)
+
+    direct_vm.clear_mocks()
+    arm(
+        direct_vm, aetna_0157, cms_100_1,
+        verdict_json(quote, section="Experimental, Investigational, or Unproven"),
+    )
+    assert direct_vm.run_validator() is False
+
+
+def test_a_validator_in_a_different_payout_band_disagrees(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    quote = real_quote(aetna_0157)
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1, quote=quote)
+
+    direct_vm.clear_mocks()
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(quote, recoverable_usd=40_000))
+    assert direct_vm.run_validator() is False
+
+
+def test_a_different_figure_inside_the_same_band_still_agrees(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    """Two honest readers will never agree on a number. They do not have to."""
+    direct_vm.sender = direct_alice
+    quote = real_quote(aetna_0157)
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1, quote=quote)
+
+    direct_vm.clear_mocks()
+    # 4,200 and 6,980 both sit in the two thousand to seven and a half thousand band.
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(quote, recoverable_usd=6_980))
+    assert direct_vm.run_validator() is True
+
+
+def test_a_validator_crossing_the_confidence_line_disagrees(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    """Confidence is not compared as a number, only against the line that releases money."""
+    direct_vm.sender = direct_alice
+    quote = real_quote(aetna_0157)
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1, quote=quote)
+
+    direct_vm.clear_mocks()
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(quote, confidence=55))
+    assert direct_vm.run_validator() is False
+
+    # A wobble that stays on the same side of the line is fine.
+    direct_vm.clear_mocks()
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(quote, confidence=94))
+    assert direct_vm.run_validator() is True
+
+
+def test_a_validator_reading_a_rewritten_bulletin_disagrees(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    """If the document moved between leader and validator, the code audit diverges."""
+    direct_vm.sender = direct_alice
+    quote = real_quote(aetna_0157)
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1, quote=quote)
+
+    stripped = aetna_0157.replace(b"43644", b"XXXXX")
+    direct_vm.clear_mocks()
+    arm(direct_vm, stripped, cms_100_1, verdict_json(quote, recoverable_usd=4200))
+    assert direct_vm.run_validator() is False
+
+
+def test_both_sides_hitting_a_dead_host_agree_about_the_failure(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    """A dead source is not a disagreement.
+
+    A validator is only captured by a run that actually reached the nondet block, so the
+    verdict is produced first. The sources are then taken away, which is what the
+    validator sees when it re-runs the job, and the leader is told to have failed the
+    same transient way.
+    """
+    direct_vm.sender = direct_alice
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    direct_vm.clear_mocks()
+    serve(direct_vm, AETNA_0157, b"", status=503)
+    serve(direct_vm, CMS_100_1, cms_100_1)
+
+    assert direct_vm.run_validator(
+        leader_error=RuntimeError("[TRANSIENT] source unreachable, status 503")
+    ) is True
+
+
+def test_a_transient_leader_failure_against_a_live_source_is_a_disagreement(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    """If only the leader could not reach the source, that is not agreement."""
+    direct_vm.sender = direct_alice
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    assert direct_vm.run_validator(
+        leader_error=RuntimeError("[TRANSIENT] source unreachable, status 503")
+    ) is False
+
+
+def test_a_leader_failure_the_validator_cannot_reproduce_is_a_disagreement(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    # The leader claims the model broke, but the validator's own run succeeds.
+    assert direct_vm.run_validator(
+        leader_error=RuntimeError("[LLM_ERROR] model returned nothing useful")
+    ) is False
+
+
+# --------------------------------------------------------------- the appeal path
+
+def test_a_review_needs_a_bond(court, direct_vm, direct_alice, aetna_0157, cms_100_1):
+    direct_vm.sender = direct_alice
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    direct_vm.value = 0
+    with direct_vm.expect_revert("review bond of"):
+        court.request_review(docket)
+
+
+def test_posting_a_bond_opens_a_second_round(
+    court, direct_vm, direct_alice, direct_bob, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    direct_vm.sender = direct_bob
+    direct_vm.value = ATTO // 4
+    out = court.request_review(docket)
+
+    assert out["panel_round"] == 2
+    assert int(out["bond_atto"]) == ATTO // 4
+    assert out["requester"] == str(direct_bob)
+    case = court.get_case(docket)
+    assert case["status"] == "UNDER_REVIEW"
+    assert case["panel_round"] == 2
+    assert court.court_stats()["review_count"] == 1
+    assert int(court.court_stats()["bond_held_atto"]) == ATTO // 4
+
+
+def test_a_case_cannot_be_reviewed_twice_at_once(
+    court, direct_vm, direct_alice, direct_bob, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    direct_vm.sender = direct_bob
+    direct_vm.value = ATTO // 4
+    court.request_review(docket)
+    with direct_vm.expect_revert("already under review"):
+        court.request_review(docket)
+
+
+def test_a_case_with_no_verdict_cannot_be_reviewed(court, direct_vm, direct_alice):
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court)
+    direct_vm.value = ATTO // 4
+    with direct_vm.expect_revert("has no verdict to review"):
+        court.request_review(docket)
+
+
+def test_a_challenger_who_was_right_gets_the_bond_back(
+    court, direct_vm, direct_owner, direct_alice, direct_bob, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    direct_vm.sender = direct_bob
+    direct_vm.value = ATTO // 4
+    court.request_review(docket)
+
+    direct_vm.value = 0
+    direct_vm.sender = direct_owner
+    out = court.resolve_review(docket, True)
+
+    assert out["bond_returned"] is True
+    assert out["awarded_to"] == str(direct_bob)
+    assert int(court.bond_of(str(direct_bob))) == ATTO // 4
+    assert int(court.court_stats()["bond_held_atto"]) == 0
+    assert court.get_case(docket)["status"] == "VERDICT"
+
+
+def test_a_challenger_who_was_wrong_forfeits_the_bond(
+    court, direct_vm, direct_owner, direct_alice, direct_bob, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    direct_vm.sender = direct_bob
+    direct_vm.value = ATTO // 4
+    court.request_review(docket)
+
+    direct_vm.value = 0
+    direct_vm.sender = direct_owner
+    out = court.resolve_review(docket, False)
+
+    assert out["bond_returned"] is False
+    assert int(court.bond_of(str(direct_bob))) == 0
+
+
+def test_only_the_owner_may_resolve_a_review(
+    court, direct_vm, direct_alice, direct_bob, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+    direct_vm.sender = direct_bob
+    direct_vm.value = ATTO // 4
+    court.request_review(docket)
+
+    direct_vm.value = 0
+    with direct_vm.expect_revert("not the court owner"):
+        court.resolve_review(docket, True)
+
+
+def test_withdrawing_with_nothing_owed_is_refused(court, direct_vm, direct_bob):
+    direct_vm.sender = direct_bob
+    with direct_vm.expect_revert("nothing is owed"):
+        court.withdraw_bond()
+
+
+def test_a_second_round_can_be_adjudicated_again(
+    court, direct_vm, direct_alice, direct_bob, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    quote = real_quote(aetna_0157)
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1, quote=quote)
+
+    direct_vm.sender = direct_bob
+    direct_vm.value = ATTO // 4
+    court.request_review(docket)
+    direct_vm.value = 0
+
+    # A fresh panel reads it the other way.
+    direct_vm.clear_mocks()
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(quote, overturn=False))
+    out = court.adjudicate(docket)
+
+    assert out["overturn_recommended"] is False
+    assert out["panel_round"] == 2
+    # The overturn count is corrected rather than double counted.
+    assert court.court_stats()["overturn_count"] == 0
+    assert court.court_stats()["verdict_count"] == 1
+
+
+# --------------------------------------------------------- advanceability gate
+
+def test_a_case_with_no_verdict_is_not_advanceable(court, direct_vm, direct_alice):
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court)
+    gate = court.is_advanceable(docket)
+    assert gate["ok"] is False
+    assert "not been adjudicated" in gate["reason"]
+
+
+def test_an_upheld_denial_is_not_advanceable(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court)
+    arm(
+        direct_vm, aetna_0157, cms_100_1,
+        verdict_json(real_quote(aetna_0157), overturn=False),
+    )
+    court.adjudicate(docket)
+
+    gate = court.is_advanceable(docket)
+    assert gate["ok"] is False
+    assert "upheld the denial" in gate["reason"]
+
+
+def test_a_low_confidence_verdict_is_not_advanceable(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court)
+    arm(
+        direct_vm, aetna_0157, cms_100_1,
+        verdict_json(real_quote(aetna_0157), confidence=51),
+    )
+    court.adjudicate(docket)
+
+    gate = court.is_advanceable(docket)
+    assert gate["ok"] is False
+    assert "below the confidence band" in gate["reason"]
+
+
+def test_a_case_under_review_is_not_advanceable(
+    court, direct_vm, direct_alice, direct_bob, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+    direct_vm.sender = direct_bob
+    direct_vm.value = ATTO // 4
+    court.request_review(docket)
+    direct_vm.value = 0
+
+    gate = court.is_advanceable(docket)
+    assert gate["ok"] is False
+    assert "under review" in gate["reason"]
+
+
+def test_a_confident_overturn_is_advanceable(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    gate = court.is_advanceable(docket)
+    assert gate["ok"] is True
+    assert gate["reason"] == ""
+    assert gate["band"] == 2
+    assert gate["filer"] == str(direct_alice)
+    assert int(gate["disputed_atto"]) == 12_000 * ATTO
+
+
+# ------------------------------------------------------------- administration
+
+def test_only_the_pool_may_record_an_advance(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    with direct_vm.expect_revert("only the advance pool"):
+        court.note_advance(docket, str(ATTO))
+
+
+def test_the_court_can_settle_a_case(
+    court, direct_vm, direct_owner, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    direct_vm.sender = direct_owner
+    court.mark_settled(docket, str(5_000 * ATTO))
+    case = court.get_case(docket)
+    assert case["status"] == "SETTLED"
+    assert int(case["settled_atto"]) == 5_000 * ATTO
+
+    with direct_vm.expect_revert("already closed"):
+        court.mark_settled(docket, str(ATTO))
+
+
+def test_a_rejection_needs_a_reason(court, direct_vm, direct_owner, direct_alice):
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court)
+    direct_vm.sender = direct_owner
+    with direct_vm.expect_revert("needs a stated reason"):
+        court.reject_case(docket, "  ")
+    court.reject_case(docket, "Filed against the wrong plan by mistake.")
+    assert court.get_case(docket)["status"] == "REJECTED"
+
+
+def test_configuration_is_owner_only(court, direct_vm, direct_bob):
+    direct_vm.sender = direct_bob
+    for call in (
+        lambda: court.set_min_confidence(10),
+        lambda: court.set_review_bond(str(ATTO)),
+        lambda: court.set_pool("0x" + "11" * 20),
+        lambda: court.set_registry("0x" + "22" * 20),
+    ):
+        with direct_vm.expect_revert("not the court owner"):
+            call()
+
+
+def test_min_confidence_must_be_a_percentage(court, direct_vm, direct_owner):
+    direct_vm.sender = direct_owner
+    for bad in (0, 101):
+        with direct_vm.expect_revert("between 1 and 100"):
+            court.set_min_confidence(bad)
+
+
+def test_the_constructor_refuses_a_bad_registry(direct_deploy, direct_vm, direct_owner):
+    from conftest import CONTRACTS
+
+    direct_vm.sender = direct_owner
+    with direct_vm.expect_revert("must be a 20 byte address"):
+        direct_deploy(CONTRACTS["court"], "0xdeadbeef", 70, str(ATTO))
+
+
+def test_the_config_view_reports_what_was_deployed(court):
+    from conftest import REGISTRY_ADDRESS
+
+    config = court.get_config()
+    assert config["registry"].lower() == REGISTRY_ADDRESS.lower()
+    assert config["min_confidence"] == 70
+    assert config["grounds"] == [
+        "MEDICAL_NECESSITY", "CODING_ERROR", "NETWORK_STATUS",
+        "PRIOR_AUTH_DEFECT", "TIMELINESS",
+    ]
+    assert config["band_upper_usd"] == [500, 2000, 7500, 25000, 75000]
+
+
+def test_the_public_docket_lists_newest_first(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    first = file_clean_case(court)
+    second = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    page = court.docket_page(0, 10)
+    assert [row["docket"] for row in page] == [second, first]
+    assert page[0]["ground"] == "MEDICAL_NECESSITY"
+    assert page[0]["overturn_recommended"] is True
+    assert page[1]["ground"] == ""
+    assert page[1]["status"] == "FILED"
+
+
+def test_adjudicating_against_a_rule_that_lapsed_after_filing_is_refused(
+    make_court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    """A rule can lapse between filing and adjudication. The gate is checked twice."""
+    court, stub = make_court()
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court)
+
+    stub.view("lapse_reason", lambda _plan_id="": "The rule for that plan lapsed on 2026-05-31.")
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(real_quote(aetna_0157)))
+
+    with direct_vm.expect_revert("lapsed on 2026-05-31"):
+        court.adjudicate(docket)
+
+
+def test_a_rule_with_no_declared_sections_cannot_be_adjudicated(
+    make_court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    """Without a closed set of sections there is nothing checkable to cite."""
+    from conftest import BARIATRIC_RULE
+
+    bare = dict(BARIATRIC_RULE)
+    bare["clause_sections"] = []
+    court, _ = make_court(rule=bare)
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court)
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(real_quote(aetna_0157)))
+
+    with direct_vm.expect_revert("declares no clause sections"):
+        court.adjudicate(docket)

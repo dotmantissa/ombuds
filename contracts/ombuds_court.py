@@ -906,7 +906,18 @@ class OmbudsCourt(gl.Contract):
             def run_audit() -> list:
                 return audit_codes(cpt_tuple, icd_tuple, bulletin)
 
-            findings = gl.vm.unpack_result(gl.vm.spawn_sandbox(run_audit))
+            # The audit runs in a sandbox so a malformed code cannot take the whole
+            # transaction down with it. The sandbox is an isolation boundary, not a
+            # source of truth: run_audit is pure, deterministic and reads nothing but its
+            # arguments, so if the sandbox is unavailable the same function run inline
+            # produces the identical answer. Every validator computes it the same way
+            # either path, which is what the comparison depends on.
+            sandboxed = None
+            try:
+                sandboxed = gl.vm.unpack_result(gl.vm.spawn_sandbox(run_audit))
+            except Exception:
+                sandboxed = None
+            findings = sandboxed if isinstance(sandboxed, list) else run_audit()
             audit_text = _audit_summary(findings)
 
             prompt = f"""You are adjudicating a denied health insurance claim against the
@@ -1121,7 +1132,14 @@ Return JSON with exactly these keys:
             sort_keys=True,
         )
 
+        # Read the outgoing verdict into plain locals FIRST. `previous` is a view onto the
+        # same storage slot the write below replaces, so reading it afterwards would read
+        # back the new values and the running totals would silently stop being corrected.
         previous = self.verdicts.get(docket)
+        had_verdict = previous is not None
+        prior_overturn = bool(previous.overturn_recommended) if previous is not None else False
+        prior_ground = str(previous.ground) if previous is not None else ""
+
         self.verdicts[docket] = Verdict(
             docket=docket,
             overturn_recommended=overturn,
@@ -1140,7 +1158,7 @@ Return JSON with exactly these keys:
             panel_round=u256(round_number),
         )
 
-        if previous is None:
+        if not had_verdict:
             self.verdict_count = u256(int(self.verdict_count) + 1)
             if overturn:
                 self.overturn_count = u256(int(self.overturn_count) + 1)
@@ -1149,19 +1167,20 @@ Return JSON with exactly these keys:
                 )
             self.ground_counts[ground] = u256(int(self.ground_counts.get(ground, u256(0))) + 1)
         else:
-            if bool(previous.overturn_recommended) != overturn:
+            if prior_overturn != overturn:
                 if overturn:
                     self.overturn_count = u256(int(self.overturn_count) + 1)
                     self.total_overturned_atto = u256(
                         int(self.total_overturned_atto) + int(case.disputed_atto)
                     )
-                elif int(self.overturn_count) > 0:
-                    self.overturn_count = u256(int(self.overturn_count) - 1)
+                else:
+                    if int(self.overturn_count) > 0:
+                        self.overturn_count = u256(int(self.overturn_count) - 1)
                     held = int(self.total_overturned_atto) - int(case.disputed_atto)
                     self.total_overturned_atto = u256(held if held > 0 else 0)
-            if previous.ground != ground:
-                prior = int(self.ground_counts.get(previous.ground, u256(0)))
-                self.ground_counts[previous.ground] = u256(prior - 1 if prior > 0 else 0)
+            if prior_ground != ground:
+                prior = int(self.ground_counts.get(prior_ground, u256(0)))
+                self.ground_counts[prior_ground] = u256(prior - 1 if prior > 0 else 0)
                 self.ground_counts[ground] = u256(int(self.ground_counts.get(ground, u256(0))) + 1)
 
         self._bump_status(case.status, -1)
