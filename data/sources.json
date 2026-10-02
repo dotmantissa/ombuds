@@ -1,0 +1,1007 @@
+{
+  "meta": {
+    "generated_at": "2026-10-02T02:36:39+00:00",
+    "generator": "scripts/build_sources.py",
+    "verification_method": "Every URL in this file was requested over HTTPS with a browser user agent at the time stated in its verification block, and the status recorded is the status that came back. Nothing here is asserted without an observation.",
+    "fetchable_on_chain_note": "Only the insurer bulletins and the CMS coverage determinations are fetched by the contracts during consensus, so only those have to answer a scripted request. State statute pages are citations for the appeal letter and several of them refuse automated traffic, which is recorded rather than hidden.",
+    "rejected": [
+      {
+        "source": "CMS Local Coverage Determination API",
+        "url": "https://api.coverage.cms.gov/v1/data/lcd",
+        "reason": "Returns HTTP 401 and a licence agreement for the AMA CPT, ADA CDT and AHA NUBC code sets. It needs an authentication token that cannot be obtained without accepting those licences, so Ombuds does not use LCDs and argues from National Coverage Determinations instead."
+      },
+      {
+        "source": "UnitedHealthcare and Cigna commercial medical policies",
+        "url": "https://www.uhcprovider.com/, https://static.cigna.com/",
+        "reason": "Both publish these policies as PDFs. The contracts read a bulletin by stripping markup from HTML, which a PDF defeats, so neither insurer is in the v1 registry. Adding them needs a PDF text layer in the fetch path, which is a real piece of work and not a mock."
+      }
+    ]
+  },
+  "federal_external_review": {
+    "rule": "Federal external review under the Affordable Care Act",
+    "citation": "45 CFR 147.136",
+    "default_request_window_days": 120,
+    "url": "https://www.ecfr.gov/current/title-45/subtitle-A/subchapter-B/part-147/section-147.136",
+    "verification": {
+      "http_status": 200,
+      "bytes": 10596,
+      "content_type": "text/html",
+      "observed_at": "2026-10-02T02:36:39+00:00",
+      "reachable": true
+    }
+  },
+  "code_set_authorities": [
+    {
+      "set": "CPT",
+      "steward": "American Medical Association",
+      "url": "https://www.ama-assn.org/practice-management/cpt",
+      "verification": {
+        "http_status": 200,
+        "bytes": 296702,
+        "content_type": "text/html",
+        "observed_at": "2026-10-02T02:36:39+00:00",
+        "reachable": true
+      }
+    },
+    {
+      "set": "HCPCS Level II",
+      "steward": "Centers for Medicare and Medicaid Services",
+      "url": "https://www.cms.gov/medicare/coding-billing/healthcare-common-procedure-system",
+      "verification": {
+        "http_status": 200,
+        "bytes": 197355,
+        "content_type": "text/html",
+        "observed_at": "2026-10-02T02:36:39+00:00",
+        "reachable": true
+      }
+    },
+    {
+      "set": "ICD-10-CM",
+      "steward": "Centers for Disease Control and Prevention",
+      "url": "https://www.cdc.gov/nchs/icd/icd-10-cm/index.html",
+      "verification": {
+        "http_status": 403,
+        "bytes": 0,
+        "content_type": "",
+        "observed_at": "2026-10-02T02:36:39+00:00",
+        "reachable": false
+      }
+    },
+    {
+      "set": "CARC and RARC",
+      "steward": "X12 and CMS",
+      "url": "https://x12.org/codes/claim-adjustment-reason-codes",
+      "verification": {
+        "http_status": 200,
+        "bytes": 227055,
+        "content_type": "text/html",
+        "observed_at": "2026-10-02T02:36:39+00:00",
+        "reachable": true
+      }
+    }
+  ],
+  "procedure_families": [
+    {
+      "family_id": "bariatric_surgery",
+      "label": "Bariatric and obesity surgery",
+      "plain_language": "Weight loss surgery, including sleeve gastrectomy and gastric bypass.",
+      "cpt_codes": [
+        {
+          "code": "43644",
+          "description": "Laparoscopic gastric bypass with Roux-en-Y, 150 cm or less"
+        },
+        {
+          "code": "43645",
+          "description": "Laparoscopic gastric bypass with small intestine reconstruction"
+        },
+        {
+          "code": "43775",
+          "description": "Laparoscopic sleeve gastrectomy, longitudinal"
+        },
+        {
+          "code": "43846",
+          "description": "Open gastric bypass with short limb Roux-en-Y"
+        },
+        {
+          "code": "43848",
+          "description": "Revision, open, of gastric restrictive procedure"
+        }
+      ],
+      "icd10_codes": [
+        {
+          "code": "E66.01",
+          "description": "Morbid or severe obesity due to excess calories"
+        },
+        {
+          "code": "Z68.41",
+          "description": "Body mass index 40.0 to 44.9, adult"
+        },
+        {
+          "code": "Z68.42",
+          "description": "Body mass index 45.0 to 49.9, adult"
+        },
+        {
+          "code": "E11.9",
+          "description": "Type 2 diabetes mellitus without complications"
+        }
+      ],
+      "ncd": {
+        "display_id": "100.1",
+        "ncdid": 57,
+        "ver": 5,
+        "api_url": "https://api.coverage.cms.gov/v1/data/ncd?ncdid=57&ncdver=5",
+        "verification": {
+          "http_status": 403,
+          "bytes": 0,
+          "content_type": "",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": false
+        },
+        "fetchable_on_chain": true
+      },
+      "guideline": {
+        "body": "American Society for Metabolic and Bariatric Surgery",
+        "title": "Indications for metabolic and bariatric surgery",
+        "url": "https://asmbs.org/resources/metabolic-and-bariatric-surgery/",
+        "verification": {
+          "http_status": 200,
+          "bytes": 839093,
+          "content_type": "text/html",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": true
+        },
+        "fetchable_on_chain": false
+      }
+    },
+    {
+      "family_id": "sleep_apnea_cpap",
+      "label": "Sleep apnea testing and CPAP therapy",
+      "plain_language": "Sleep studies and the CPAP machine and supplies that follow one.",
+      "cpt_codes": [
+        {
+          "code": "95810",
+          "description": "Polysomnography, sleep staging, 4 or more parameters, attended"
+        },
+        {
+          "code": "95811",
+          "description": "Polysomnography with CPAP or bilevel titration, attended"
+        },
+        {
+          "code": "95800",
+          "description": "Sleep study, unattended, with heart rate and oxygen saturation"
+        },
+        {
+          "code": "G0399",
+          "description": "Home sleep study test, type III portable monitor"
+        },
+        {
+          "code": "E0601",
+          "description": "Continuous positive airway pressure device"
+        },
+        {
+          "code": "A7030",
+          "description": "Full face mask used with positive airway pressure device"
+        }
+      ],
+      "icd10_codes": [
+        {
+          "code": "G47.33",
+          "description": "Obstructive sleep apnea, adult and paediatric"
+        },
+        {
+          "code": "G47.30",
+          "description": "Sleep apnea, unspecified"
+        },
+        {
+          "code": "R06.83",
+          "description": "Snoring"
+        }
+      ],
+      "ncd": {
+        "display_id": "240.4",
+        "ncdid": 226,
+        "ver": 3,
+        "api_url": "https://api.coverage.cms.gov/v1/data/ncd?ncdid=226&ncdver=3",
+        "verification": {
+          "http_status": 403,
+          "bytes": 0,
+          "content_type": "",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": false
+        },
+        "fetchable_on_chain": true
+      },
+      "secondary_ncd": {
+        "display_id": "240.4.1",
+        "ncdid": 330,
+        "ver": 1,
+        "api_url": "https://api.coverage.cms.gov/v1/data/ncd?ncdid=330&ncdver=1",
+        "verification": {
+          "http_status": 403,
+          "bytes": 0,
+          "content_type": "",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": false
+        },
+        "fetchable_on_chain": true
+      },
+      "guideline": {
+        "body": "American Academy of Sleep Medicine",
+        "title": "Clinical practice guidelines for the diagnosis of obstructive sleep apnea",
+        "url": "https://aasm.org/clinical-resources/practice-standards/practice-guidelines/",
+        "verification": {
+          "http_status": 200,
+          "bytes": 355894,
+          "content_type": "text/html",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": true
+        },
+        "fetchable_on_chain": false
+      }
+    },
+    {
+      "family_id": "breast_reconstruction",
+      "label": "Breast reconstruction after mastectomy",
+      "plain_language": "Reconstruction following a mastectomy, which federal law requires plans to cover.",
+      "cpt_codes": [
+        {
+          "code": "19357",
+          "description": "Breast reconstruction with tissue expander placement"
+        },
+        {
+          "code": "19361",
+          "description": "Breast reconstruction with latissimus dorsi flap"
+        },
+        {
+          "code": "19364",
+          "description": "Breast reconstruction with free flap"
+        },
+        {
+          "code": "19367",
+          "description": "Breast reconstruction with transverse rectus abdominis flap"
+        },
+        {
+          "code": "19380",
+          "description": "Revision of reconstructed breast"
+        }
+      ],
+      "icd10_codes": [
+        {
+          "code": "Z90.11",
+          "description": "Acquired absence of right breast and nipple"
+        },
+        {
+          "code": "Z90.12",
+          "description": "Acquired absence of left breast and nipple"
+        },
+        {
+          "code": "Z90.13",
+          "description": "Acquired absence of bilateral breasts and nipples"
+        },
+        {
+          "code": "C50.911",
+          "description": "Malignant neoplasm of unspecified site of right female breast"
+        }
+      ],
+      "ncd": {
+        "display_id": "140.2",
+        "ncdid": 64,
+        "ver": 1,
+        "api_url": "https://api.coverage.cms.gov/v1/data/ncd?ncdid=64&ncdver=1",
+        "verification": {
+          "http_status": 403,
+          "bytes": 0,
+          "content_type": "",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": false
+        },
+        "fetchable_on_chain": true
+      },
+      "guideline": {
+        "body": "United States Department of Labor",
+        "title": "Women's Health and Cancer Rights Act of 1998",
+        "url": "https://www.dol.gov/agencies/ebsa/laws-and-regulations/laws/whcra",
+        "verification": {
+          "http_status": 403,
+          "bytes": 0,
+          "content_type": "",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": false
+        },
+        "fetchable_on_chain": false
+      }
+    },
+    {
+      "family_id": "cochlear_implant",
+      "label": "Cochlear implantation",
+      "plain_language": "A surgically placed hearing device for severe to profound hearing loss.",
+      "cpt_codes": [
+        {
+          "code": "69930",
+          "description": "Cochlear device implantation, with or without mastoidectomy"
+        },
+        {
+          "code": "L8614",
+          "description": "Cochlear device, includes all internal and external components"
+        },
+        {
+          "code": "92601",
+          "description": "Diagnostic analysis of cochlear implant, under 7 years of age"
+        },
+        {
+          "code": "92603",
+          "description": "Diagnostic analysis of cochlear implant, age 7 or over"
+        }
+      ],
+      "icd10_codes": [
+        {
+          "code": "H90.3",
+          "description": "Sensorineural hearing loss, bilateral"
+        },
+        {
+          "code": "H90.41",
+          "description": "Sensorineural hearing loss, unilateral, right ear"
+        },
+        {
+          "code": "H91.93",
+          "description": "Unspecified hearing loss, bilateral"
+        }
+      ],
+      "ncd": {
+        "display_id": "50.3",
+        "ncdid": 245,
+        "ver": 3,
+        "api_url": "https://api.coverage.cms.gov/v1/data/ncd?ncdid=245&ncdver=3",
+        "verification": {
+          "http_status": 403,
+          "bytes": 0,
+          "content_type": "",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": false
+        },
+        "fetchable_on_chain": true
+      },
+      "guideline": {
+        "body": "American Academy of Otolaryngology, Head and Neck Surgery",
+        "title": "Clinical practice guideline on cochlear implantation",
+        "url": "https://www.entnet.org/resource/clinical-practice-guidelines/",
+        "verification": {
+          "http_status": 404,
+          "bytes": 0,
+          "content_type": "",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": false
+        },
+        "fetchable_on_chain": false
+      }
+    },
+    {
+      "family_id": "knee_arthroplasty",
+      "label": "Total knee replacement",
+      "plain_language": "Knee replacement surgery for advanced arthritis.",
+      "cpt_codes": [
+        {
+          "code": "27447",
+          "description": "Total knee arthroplasty, medial and lateral compartments"
+        },
+        {
+          "code": "27446",
+          "description": "Arthroplasty, knee, medial OR lateral compartment"
+        },
+        {
+          "code": "27486",
+          "description": "Revision of total knee arthroplasty, one component"
+        },
+        {
+          "code": "27487",
+          "description": "Revision of total knee arthroplasty, femoral and tibial components"
+        }
+      ],
+      "icd10_codes": [
+        {
+          "code": "M17.0",
+          "description": "Bilateral primary osteoarthritis of knee"
+        },
+        {
+          "code": "M17.11",
+          "description": "Unilateral primary osteoarthritis, right knee"
+        },
+        {
+          "code": "M17.12",
+          "description": "Unilateral primary osteoarthritis, left knee"
+        },
+        {
+          "code": "M17.5",
+          "description": "Other unilateral secondary osteoarthritis of knee"
+        }
+      ],
+      "ncd": null,
+      "guideline": {
+        "body": "American Academy of Orthopaedic Surgeons",
+        "title": "Surgical management of osteoarthritis of the knee",
+        "url": "https://www.aaos.org/quality/quality-programs/lower-extremity-programs/osteoarthritis-of-the-knee/",
+        "verification": {
+          "http_status": 302,
+          "bytes": 0,
+          "content_type": "",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": false
+        },
+        "fetchable_on_chain": false
+      }
+    }
+  ],
+  "plan_rules": [
+    {
+      "plan_id": "AETNA-COMMERCIAL-BARIATRIC_SURGERY",
+      "insurer": "Aetna",
+      "plan_line": "Commercial",
+      "family_id": "bariatric_surgery",
+      "bulletin_number": "0157",
+      "bulletin_title": "",
+      "bulletin_url": "https://www.aetna.com/cpb/medical/data/100_199/0157.html",
+      "fetch_mode": "html",
+      "state": "US",
+      "effective_from": "2026-01-01",
+      "effective_to": "2027-01-01",
+      "effective_to_inferred": true,
+      "clause_sections": [
+        "Scope of Policy",
+        "Medically Necessary",
+        "Experimental, Investigational, or Unproven",
+        "Cosmetic",
+        "Policy Limitations and Exclusions",
+        "Applicable CPT / HCPCS / ICD-10 Codes"
+      ],
+      "cms_source_url": "https://api.coverage.cms.gov/v1/data/ncd?ncdid=57&ncdver=5",
+      "cms_display_id": "100.1",
+      "guideline_url": "https://asmbs.org/resources/metabolic-and-bariatric-surgery/",
+      "verification": {
+        "http_status": 403,
+        "bytes": 0,
+        "content_type": "",
+        "observed_at": "2026-10-02T02:36:39+00:00",
+        "reachable": false
+      },
+      "fetchable_on_chain": true
+    },
+    {
+      "plan_id": "AETNA-COMMERCIAL-SLEEP_APNEA_CPAP",
+      "insurer": "Aetna",
+      "plan_line": "Commercial",
+      "family_id": "sleep_apnea_cpap",
+      "bulletin_number": "0004",
+      "bulletin_title": "",
+      "bulletin_url": "https://www.aetna.com/cpb/medical/data/1_99/0004.html",
+      "fetch_mode": "html",
+      "state": "US",
+      "effective_from": "2026-01-01",
+      "effective_to": "2027-01-01",
+      "effective_to_inferred": true,
+      "clause_sections": [
+        "Scope of Policy",
+        "Medically Necessary",
+        "Experimental, Investigational, or Unproven",
+        "Cosmetic",
+        "Policy Limitations and Exclusions",
+        "Applicable CPT / HCPCS / ICD-10 Codes"
+      ],
+      "cms_source_url": "https://api.coverage.cms.gov/v1/data/ncd?ncdid=226&ncdver=3",
+      "cms_display_id": "240.4",
+      "guideline_url": "https://aasm.org/clinical-resources/practice-standards/practice-guidelines/",
+      "verification": {
+        "http_status": 403,
+        "bytes": 0,
+        "content_type": "",
+        "observed_at": "2026-10-02T02:36:39+00:00",
+        "reachable": false
+      },
+      "fetchable_on_chain": true
+    },
+    {
+      "plan_id": "AETNA-COMMERCIAL-BREAST_RECONSTRUCTION",
+      "insurer": "Aetna",
+      "plan_line": "Commercial",
+      "family_id": "breast_reconstruction",
+      "bulletin_number": "0185",
+      "bulletin_title": "",
+      "bulletin_url": "https://www.aetna.com/cpb/medical/data/100_199/0185.html",
+      "fetch_mode": "html",
+      "state": "US",
+      "effective_from": "2026-01-01",
+      "effective_to": "2027-01-01",
+      "effective_to_inferred": true,
+      "clause_sections": [
+        "Scope of Policy",
+        "Medically Necessary",
+        "Experimental, Investigational, or Unproven",
+        "Cosmetic",
+        "Policy Limitations and Exclusions",
+        "Applicable CPT / HCPCS / ICD-10 Codes"
+      ],
+      "cms_source_url": "https://api.coverage.cms.gov/v1/data/ncd?ncdid=64&ncdver=1",
+      "cms_display_id": "140.2",
+      "guideline_url": "https://www.dol.gov/agencies/ebsa/laws-and-regulations/laws/whcra",
+      "verification": {
+        "http_status": 403,
+        "bytes": 0,
+        "content_type": "",
+        "observed_at": "2026-10-02T02:36:39+00:00",
+        "reachable": false
+      },
+      "fetchable_on_chain": true
+    },
+    {
+      "plan_id": "AETNA-COMMERCIAL-COCHLEAR_IMPLANT",
+      "insurer": "Aetna",
+      "plan_line": "Commercial",
+      "family_id": "cochlear_implant",
+      "bulletin_number": "0013",
+      "bulletin_title": "",
+      "bulletin_url": "https://www.aetna.com/cpb/medical/data/1_99/0013.html",
+      "fetch_mode": "html",
+      "state": "US",
+      "effective_from": "2026-01-01",
+      "effective_to": "2027-01-01",
+      "effective_to_inferred": true,
+      "clause_sections": [
+        "Scope of Policy",
+        "Medically Necessary",
+        "Experimental, Investigational, or Unproven",
+        "Cosmetic",
+        "Policy Limitations and Exclusions",
+        "Applicable CPT / HCPCS / ICD-10 Codes"
+      ],
+      "cms_source_url": "https://api.coverage.cms.gov/v1/data/ncd?ncdid=245&ncdver=3",
+      "cms_display_id": "50.3",
+      "guideline_url": "https://www.entnet.org/resource/clinical-practice-guidelines/",
+      "verification": {
+        "http_status": "ERR URLError",
+        "bytes": 0,
+        "content_type": "",
+        "observed_at": "2026-10-02T02:36:39+00:00",
+        "reachable": false
+      },
+      "fetchable_on_chain": true
+    },
+    {
+      "plan_id": "AETNA-COMMERCIAL-KNEE_ARTHROPLASTY",
+      "insurer": "Aetna",
+      "plan_line": "Commercial",
+      "family_id": "knee_arthroplasty",
+      "bulletin_number": "0660",
+      "bulletin_title": "",
+      "bulletin_url": "https://www.aetna.com/cpb/medical/data/600_699/0660.html",
+      "fetch_mode": "html",
+      "state": "US",
+      "effective_from": "2026-01-01",
+      "effective_to": "2027-01-01",
+      "effective_to_inferred": true,
+      "clause_sections": [
+        "Scope of Policy",
+        "Medically Necessary",
+        "Experimental, Investigational, or Unproven",
+        "Cosmetic",
+        "Policy Limitations and Exclusions",
+        "Applicable CPT / HCPCS / ICD-10 Codes"
+      ],
+      "cms_source_url": "",
+      "cms_display_id": "",
+      "guideline_url": "https://www.aaos.org/quality/quality-programs/lower-extremity-programs/osteoarthritis-of-the-knee/",
+      "verification": {
+        "http_status": 403,
+        "bytes": 0,
+        "content_type": "",
+        "observed_at": "2026-10-02T02:36:39+00:00",
+        "reachable": false
+      },
+      "fetchable_on_chain": true
+    }
+  ],
+  "states": [
+    {
+      "state": "CA",
+      "state_name": "California",
+      "agency": "Department of Managed Health Care",
+      "statute_citation": "Cal. Health & Safety Code section 1374.30",
+      "external_review_deadline_days": 180,
+      "internal_appeal_deadline_days": 180,
+      "mechanism": "Independent Medical Review",
+      "statute_url": "https://leginfo.legislature.ca.gov/faces/codes_displaySection.xhtml?sectionNum=1374.30&lawCode=HSC",
+      "agency_url": "https://www.dmhc.ca.gov/",
+      "follows_federal_default": false,
+      "verification": {
+        "statute_url": {
+          "http_status": 200,
+          "bytes": 178853,
+          "content_type": "text/html",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": true
+        },
+        "agency_url": {
+          "http_status": 403,
+          "bytes": 0,
+          "content_type": "",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": false
+        }
+      },
+      "fetchable_on_chain": false
+    },
+    {
+      "state": "TX",
+      "state_name": "Texas",
+      "agency": "Texas Department of Insurance",
+      "statute_citation": "Tex. Ins. Code Chapter 4201, Utilization Review Agents",
+      "external_review_deadline_days": 120,
+      "internal_appeal_deadline_days": 180,
+      "mechanism": "Independent Review Organization",
+      "statute_url": "https://statutes.capitol.texas.gov/Docs/IN/htm/IN.4201.htm",
+      "agency_url": "https://www.tdi.texas.gov/",
+      "follows_federal_default": true,
+      "verification": {
+        "statute_url": {
+          "http_status": 200,
+          "bytes": 250874,
+          "content_type": "text/html",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": true
+        },
+        "agency_url": {
+          "http_status": 200,
+          "bytes": 35479,
+          "content_type": "text/html",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": true
+        }
+      },
+      "fetchable_on_chain": false
+    },
+    {
+      "state": "NY",
+      "state_name": "New York",
+      "agency": "Department of Financial Services",
+      "statute_citation": "N.Y. Ins. Law section 4914",
+      "external_review_deadline_days": 120,
+      "internal_appeal_deadline_days": 180,
+      "mechanism": "External Appeal",
+      "statute_url": "https://www.nysenate.gov/legislation/laws/ISC/4914",
+      "agency_url": "https://www.dfs.ny.gov/",
+      "follows_federal_default": true,
+      "verification": {
+        "statute_url": {
+          "http_status": 403,
+          "bytes": 0,
+          "content_type": "",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": false
+        },
+        "agency_url": {
+          "http_status": 403,
+          "bytes": 0,
+          "content_type": "",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": false
+        }
+      },
+      "fetchable_on_chain": false
+    },
+    {
+      "state": "FL",
+      "state_name": "Florida",
+      "agency": "Florida Department of Financial Services",
+      "statute_citation": "Fla. Stat. section 408.7056",
+      "external_review_deadline_days": 120,
+      "internal_appeal_deadline_days": 180,
+      "mechanism": "Subscriber Assistance Program and federal external review",
+      "statute_url": "https://www.flsenate.gov/Laws/Statutes/2024/408.7056",
+      "agency_url": "https://www.myfloridacfo.com/division/consumers",
+      "follows_federal_default": true,
+      "verification": {
+        "statute_url": {
+          "http_status": "ERR URLError",
+          "bytes": 0,
+          "content_type": "",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": false
+        },
+        "agency_url": {
+          "http_status": "ERR URLError",
+          "bytes": 0,
+          "content_type": "",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": false
+        }
+      },
+      "fetchable_on_chain": false
+    },
+    {
+      "state": "IL",
+      "state_name": "Illinois",
+      "agency": "Illinois Department of Insurance",
+      "statute_citation": "215 ILCS 180, Health Carrier External Review Act",
+      "external_review_deadline_days": 120,
+      "internal_appeal_deadline_days": 180,
+      "mechanism": "External Independent Review",
+      "statute_url": "https://www.ilga.gov/legislation/ilcs/ilcs5.asp?ActID=3078",
+      "agency_url": "https://idoi.illinois.gov/",
+      "follows_federal_default": true,
+      "verification": {
+        "statute_url": {
+          "http_status": "ERR URLError",
+          "bytes": 0,
+          "content_type": "",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": false
+        },
+        "agency_url": {
+          "http_status": 200,
+          "bytes": 112398,
+          "content_type": "text/html",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": true
+        }
+      },
+      "fetchable_on_chain": false
+    },
+    {
+      "state": "PA",
+      "state_name": "Pennsylvania",
+      "agency": "Pennsylvania Insurance Department",
+      "statute_citation": "Act 146 of 2022, Independent External Review Act",
+      "external_review_deadline_days": 120,
+      "internal_appeal_deadline_days": 180,
+      "mechanism": "Independent External Review",
+      "statute_url": "https://www.pa.gov/agencies/insurance.html",
+      "agency_url": "https://www.pa.gov/agencies/insurance.html",
+      "follows_federal_default": true,
+      "verification": {
+        "statute_url": {
+          "http_status": 200,
+          "bytes": 269363,
+          "content_type": "text/html",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": true
+        },
+        "agency_url": {
+          "http_status": 200,
+          "bytes": 269363,
+          "content_type": "text/html",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": true
+        }
+      },
+      "fetchable_on_chain": false
+    },
+    {
+      "state": "OH",
+      "state_name": "Ohio",
+      "agency": "Ohio Department of Insurance",
+      "statute_citation": "Ohio Rev. Code Chapter 3922",
+      "external_review_deadline_days": 180,
+      "internal_appeal_deadline_days": 180,
+      "mechanism": "External Review",
+      "statute_url": "https://codes.ohio.gov/ohio-revised-code/chapter-3922",
+      "agency_url": "https://insurance.ohio.gov/consumers/resources/external-review",
+      "follows_federal_default": false,
+      "verification": {
+        "statute_url": {
+          "http_status": "ERR URLError",
+          "bytes": 0,
+          "content_type": "",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": false
+        },
+        "agency_url": {
+          "http_status": 200,
+          "bytes": 196705,
+          "content_type": "text/html",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": true
+        }
+      },
+      "fetchable_on_chain": false
+    },
+    {
+      "state": "GA",
+      "state_name": "Georgia",
+      "agency": "Office of Commissioner of Insurance and Safety Fire",
+      "statute_citation": "O.C.G.A. section 33-20A-37",
+      "external_review_deadline_days": 120,
+      "internal_appeal_deadline_days": 180,
+      "mechanism": "External Review",
+      "statute_url": "https://oci.georgia.gov/",
+      "agency_url": "https://oci.georgia.gov/",
+      "follows_federal_default": true,
+      "verification": {
+        "statute_url": {
+          "http_status": 200,
+          "bytes": 251233,
+          "content_type": "text/html",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": true
+        },
+        "agency_url": {
+          "http_status": 200,
+          "bytes": 251233,
+          "content_type": "text/html",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": true
+        }
+      },
+      "fetchable_on_chain": false
+    },
+    {
+      "state": "NC",
+      "state_name": "North Carolina",
+      "agency": "North Carolina Department of Insurance",
+      "statute_citation": "N.C. Gen. Stat. section 58-50-80",
+      "external_review_deadline_days": 120,
+      "internal_appeal_deadline_days": 180,
+      "mechanism": "External Review through Smart NC",
+      "statute_url": "https://www.ncleg.gov/EnactedLegislation/Statutes/HTML/BySection/Chapter_58/GS_58-50-80.html",
+      "agency_url": "https://www.ncdoi.gov/",
+      "follows_federal_default": true,
+      "verification": {
+        "statute_url": {
+          "http_status": 403,
+          "bytes": 0,
+          "content_type": "",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": false
+        },
+        "agency_url": {
+          "http_status": 200,
+          "bytes": 84676,
+          "content_type": "text/html",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": true
+        }
+      },
+      "fetchable_on_chain": false
+    },
+    {
+      "state": "MI",
+      "state_name": "Michigan",
+      "agency": "Department of Insurance and Financial Services",
+      "statute_citation": "MCL 550.1911, Patient's Right to Independent Review Act",
+      "external_review_deadline_days": 127,
+      "internal_appeal_deadline_days": 180,
+      "mechanism": "Independent Review",
+      "statute_url": "https://www.legislature.mi.gov/Laws/MCL?objectName=mcl-550-1911",
+      "agency_url": "https://www.michigan.gov/difs",
+      "follows_federal_default": false,
+      "verification": {
+        "statute_url": {
+          "http_status": 403,
+          "bytes": 0,
+          "content_type": "",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": false
+        },
+        "agency_url": {
+          "http_status": 403,
+          "bytes": 0,
+          "content_type": "",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": false
+        }
+      },
+      "fetchable_on_chain": false
+    },
+    {
+      "state": "NJ",
+      "state_name": "New Jersey",
+      "agency": "Department of Banking and Insurance",
+      "statute_citation": "N.J.S.A. 26:2S-11, Independent Health Care Appeals Program",
+      "external_review_deadline_days": 180,
+      "internal_appeal_deadline_days": 180,
+      "mechanism": "Independent Health Care Appeals Program",
+      "statute_url": "https://www.nj.gov/dobi/",
+      "agency_url": "https://www.nj.gov/dobi/",
+      "follows_federal_default": false,
+      "verification": {
+        "statute_url": {
+          "http_status": 200,
+          "bytes": 588,
+          "content_type": "text/html",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": true
+        },
+        "agency_url": {
+          "http_status": 200,
+          "bytes": 588,
+          "content_type": "text/html",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": true
+        }
+      },
+      "fetchable_on_chain": false
+    },
+    {
+      "state": "WA",
+      "state_name": "Washington",
+      "agency": "Office of the Insurance Commissioner",
+      "statute_citation": "RCW 48.43.535",
+      "external_review_deadline_days": 180,
+      "internal_appeal_deadline_days": 180,
+      "mechanism": "Independent Review Organization",
+      "statute_url": "https://app.leg.wa.gov/rcw/default.aspx?cite=48.43.535",
+      "agency_url": "https://www.insurance.wa.gov/",
+      "follows_federal_default": false,
+      "verification": {
+        "statute_url": {
+          "http_status": "ERR URLError",
+          "bytes": 0,
+          "content_type": "",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": false
+        },
+        "agency_url": {
+          "http_status": 200,
+          "bytes": 291714,
+          "content_type": "text/html",
+          "observed_at": "2026-10-02T02:36:39+00:00",
+          "reachable": true
+        }
+      },
+      "fetchable_on_chain": false
+    }
+  ],
+  "denial_reason_codes": [
+    {
+      "code": "50",
+      "set": "CARC",
+      "description": "These are non covered services because this is not deemed a medical necessity by the payer.",
+      "maps_to_ground": "MEDICAL_NECESSITY"
+    },
+    {
+      "code": "96",
+      "set": "CARC",
+      "description": "Non covered charge or charges.",
+      "maps_to_ground": "MEDICAL_NECESSITY"
+    },
+    {
+      "code": "197",
+      "set": "CARC",
+      "description": "Precertification, authorisation, notification or pre treatment absent.",
+      "maps_to_ground": "PRIOR_AUTH_DEFECT"
+    },
+    {
+      "code": "204",
+      "set": "CARC",
+      "description": "This service, equipment or drug is not covered under the patient's current benefit plan.",
+      "maps_to_ground": "MEDICAL_NECESSITY"
+    },
+    {
+      "code": "16",
+      "set": "CARC",
+      "description": "Claim or service lacks information or has submission or billing errors.",
+      "maps_to_ground": "CODING_ERROR"
+    },
+    {
+      "code": "B7",
+      "set": "CARC",
+      "description": "This provider was not certified or eligible to be paid for this procedure on this date of service.",
+      "maps_to_ground": "NETWORK_STATUS"
+    },
+    {
+      "code": "29",
+      "set": "CARC",
+      "description": "The time limit for filing has expired.",
+      "maps_to_ground": "TIMELINESS"
+    },
+    {
+      "code": "N130",
+      "set": "RARC",
+      "description": "Consult plan benefit documents or guidelines for information about restrictions for this service.",
+      "maps_to_ground": "MEDICAL_NECESSITY"
+    },
+    {
+      "code": "M127",
+      "set": "RARC",
+      "description": "Missing patient medical record for this service.",
+      "maps_to_ground": "CODING_ERROR"
+    }
+  ]
+}
