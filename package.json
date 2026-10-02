@@ -1,0 +1,26 @@
+{
+  "name": "ombuds",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Ombuds adjudicates a denied health insurance claim against the insurer's own published rule, with GenLayer validator consensus.",
+  "scripts": {
+    "dev": "npm --prefix web run dev",
+    "build": "npm --prefix web run build",
+    "start": "npm --prefix web run start",
+    "lint": "npm --prefix web run lint",
+    "typecheck": "npm --prefix web run typecheck",
+    "lint:contracts": "genvm-lint check contracts/plan_registry.py && genvm-lint check contracts/ombuds_court.py && genvm-lint check contracts/advance_pool.py",
+    "test:contracts": "pytest tests/direct -q",
+    "test:integration": "gltest tests/integration -v -s --network studionet",
+    "deploy:contracts": "node deploy/deploy.mjs",
+    "seed:registry": "node deploy/seed_registry.mjs",
+    "verify:sources": "python3 scripts/verify_sources.py",
+    "test": "npm run lint:contracts && npm run test:contracts"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "genlayer-js": "^1.1.8",
+    "undici": "^8.11.2"
+  }
+}
