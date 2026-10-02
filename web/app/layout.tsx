@@ -1,25 +1,36 @@
 import type { Metadata, Viewport } from 'next';
-import { Archivo, IBM_Plex_Mono } from 'next/font/google';
+import localFont from 'next/font/local';
 
 import './globals.css';
 import { Providers } from '@/components/Providers';
 import { SiteHeader } from '@/components/SiteHeader';
 import { SiteFooter } from '@/components/SiteFooter';
 
-// Archivo carries a width axis, which is what makes the condensed headline voice possible
-// without loading a second family.
-const archivo = Archivo({
-  subsets: ['latin'],
+// Both families are served from this origin rather than from Google.
+//
+// Two reasons. The practical one is that the build must not depend on reaching a third
+// party at compile time. The better one is that a product whose whole argument is that
+// nothing identifying leaves the browser should not make every reader's browser announce
+// itself to a font CDN on page load.
+//
+// Archivo is the full variable cut, so it carries the width axis as well as weight. That
+// is what makes the condensed headline voice possible without a second family.
+const archivo = localFont({
+  src: [{ path: './fonts/archivo-variable.woff2', weight: '100 900', style: 'normal' }],
   variable: '--font-archivo',
-  axes: ['wdth'],
   display: 'swap',
+  fallback: ['Archivo', 'Archivo Narrow', 'system-ui', 'sans-serif'],
 });
 
-const plexMono = IBM_Plex_Mono({
-  subsets: ['latin'],
-  weight: ['400', '500', '600'],
+const plexMono = localFont({
+  src: [
+    { path: './fonts/plex-mono-400.woff2', weight: '400', style: 'normal' },
+    { path: './fonts/plex-mono-500.woff2', weight: '500', style: 'normal' },
+    { path: './fonts/plex-mono-600.woff2', weight: '600', style: 'normal' },
+  ],
   variable: '--font-plex-mono',
   display: 'swap',
+  fallback: ['IBM Plex Mono', 'ui-monospace', 'monospace'],
 });
 
 export const metadata: Metadata = {
