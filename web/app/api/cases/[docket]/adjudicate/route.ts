@@ -1,0 +1,86 @@
+import { recordVerdict, updateCaseStatus } from '@/lib/db';
+import { ombudsCourtAddress, readContract, writeContract } from '@/lib/genlayer';
+import { authErrorResponse, requireMember } from '@/lib/privy';
+
+export const dynamic = 'force-dynamic';
+export const maxDuration = 300;
+
+const DOCKET = /^OMB-\d{4}-\d{6}$/;
+
+/**
+ * Send a case to the panel.
+ *
+ * This is the slow one. Every validator re-fetches the bulletin and the coverage
+ * determination, re-audits the codes, asks the question again, and then has to agree on
+ * the decision, the ground, the clause and the band. That takes as long as it takes.
+ */
+export async function POST(req: Request, context: { params: Promise<{ docket: string }> }) {
+  try {
+    await requireMember(req);
+  } catch (err) {
+    return authErrorResponse(err);
+  }
+
+  const { docket } = await context.params;
+  if (!DOCKET.test(docket)) {
+    return Response.json({ error: 'That does not look like a docket number.' }, { status: 400 });
+  }
+
+  const court = ombudsCourtAddress();
+  await updateCaseStatus(docket, 'ADJUDICATING').catch(() => undefined);
+
+  const write = await writeContract({
+    address: court,
+    functionName: 'adjudicate',
+    args: [docket],
+  });
+
+  if (!write.ok) {
+    await updateCaseStatus(docket, 'FILED').catch(() => undefined);
+    return Response.json(
+      {
+        error: write.error ?? 'The panel could not reach a verdict on that case.',
+        status: write.status,
+        executionResult: write.executionResult,
+        txHash: write.txHash,
+      },
+      { status: 422 },
+    );
+  }
+
+  // The authoritative verdict is read back off the contract rather than parsed out of a
+  // receipt, so what gets indexed is exactly what the chain holds.
+  const verdict = await readContract<{
+    overturn_recommended: boolean;
+    ground: string;
+    clause_id: string;
+    clause_section: string;
+    clause_quote: string;
+    recoverable_band: number;
+    confidence: number;
+    digest: string;
+    citations: unknown[];
+    reasoning: string;
+    panel_round: number;
+  }>({ address: court, functionName: 'get_verdict', args: [docket] });
+
+  await recordVerdict({
+    docket,
+    overturnRecommended: Boolean(verdict.overturn_recommended),
+    ground: String(verdict.ground),
+    clauseId: String(verdict.clause_id),
+    clauseSection: String(verdict.clause_section),
+    clauseQuote: String(verdict.clause_quote),
+    recoverableBand: Number(verdict.recoverable_band),
+    confidence: Number(verdict.confidence),
+    digest: String(verdict.digest),
+    citations: verdict.citations ?? [],
+    reasoning: String(verdict.reasoning),
+    txHash: write.txHash,
+    panelRound: Number(verdict.panel_round ?? 1),
+  }).catch(() => undefined);
+
+  await updateCaseStatus(docket, 'VERDICT', write.txHash).catch(() => undefined);
+
+  return Response.json({ docket, txHash: write.txHash, status: write.status, verdict });
+}
