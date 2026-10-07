@@ -16,18 +16,31 @@ from conftest import (
     CLEAN_RATIONALE,
     CMS_100_1,
     file_clean_case,
+    leader_payload,
+    policy_text,
     real_quote,
     serve,
+    support_json,
     verdict_json,
 )
 
 PROMPT_MATCH = r"(?s).*adjudicating a denied health insurance claim.*"
+# The second prompt, the one only a validator asks: is the leader's rationale actually
+# carried by the document this node fetched.
+SUPPORT_MATCH = r"(?s).*checking one paragraph of reasoning.*"
 
 
-def arm(direct_vm, aetna, cms, answer: str) -> None:
-    """Serve both real documents and one model answer."""
+def arm(direct_vm, aetna, cms, answer: str, *, supported: bool = True) -> None:
+    """Serve both real documents and both model answers.
+
+    Two prompts, because a validator asks two questions. The decision prompt is the job
+    itself. The support prompt is the validator reading the leader's rationale back
+    against the bulletin, which is the check that stops leader authored prose reaching
+    state unexamined.
+    """
     serve(direct_vm, AETNA_0157, aetna)
     serve(direct_vm, CMS_100_1, cms)
+    direct_vm.mock_llm(SUPPORT_MATCH, support_json(supported=supported))
     direct_vm.mock_llm(PROMPT_MATCH, answer)
 
 
@@ -588,6 +601,219 @@ def test_a_leader_failure_the_validator_cannot_reproduce_is_a_disagreement(
     ) is False
 
 
+# ------------------------------------- binding the leader's own words to the source
+#
+# The comparison tests above prove two honest readings agree. These prove something
+# different and more important: that a leader which does NOT run the honest code cannot
+# get prose onto the chain.
+#
+# A real leader's decide step verifies its own quote before returning it. A byzantine
+# leader simply does not, and the payload it returns is what the contract writes to
+# state. So every test here takes the honest payload, changes one field the way a
+# dishonest node would, and hands it to a validator that fetched the real document.
+# run_validator(leader_result=...) is how a leader that lies is played.
+
+
+def _tampered(direct_vm, field: str, value):
+    payload = leader_payload(direct_vm)
+    payload[field] = value
+    return payload
+
+
+def test_the_committed_quote_is_always_verbatim_in_the_bulletin(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    """The invariant every binding below rests on.
+
+    Whatever the model handed over, what reaches state is a run of characters that is
+    in the document. That is what makes a plain substring check a sufficient test for a
+    validator later.
+    """
+    direct_vm.sender = direct_alice
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    committed = court.get_verdict(docket)["clause_quote"]
+    assert len(committed) >= 24
+    assert committed in policy_text(aetna_0157)
+
+
+def test_the_honest_payload_clears_every_binding(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    """The control. Without this the tests below would pass on a broken validator."""
+    direct_vm.sender = direct_alice
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+    assert direct_vm.run_validator(leader_result=leader_payload(direct_vm)) is True
+
+
+def test_a_validator_refuses_a_quote_that_is_not_in_its_own_bulletin(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    """The defect this suite exists for.
+
+    The leader agrees on every compared field. It simply made the citation up. Nothing
+    in the field comparison can see that, because the validator was comparing its own
+    quote with itself and never looked at the leader's.
+    """
+    direct_vm.sender = direct_alice
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    fabricated = (
+        "Aetna considers bariatric surgery medically necessary for all members "
+        "regardless of body mass index or documented comorbidity."
+    )
+    assert fabricated not in policy_text(aetna_0157)
+
+    forged = _tampered(direct_vm, "clause_quote", fabricated)
+    assert direct_vm.run_validator(leader_result=forged) is False
+
+
+def test_a_validator_refuses_a_quote_too_short_to_be_a_citation(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    """A fragment short enough to appear in any document proves nothing."""
+    direct_vm.sender = direct_alice
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    # Genuinely present in the bulletin, and still not a citation.
+    assert "the" in policy_text(aetna_0157)
+    assert direct_vm.run_validator(leader_result=_tampered(direct_vm, "clause_quote", "the")) is False
+
+
+def test_a_validator_refuses_a_bulletin_digest_it_did_not_compute(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    """The fingerprint the whole verdict is anchored to is re-derived, not accepted."""
+    direct_vm.sender = direct_alice
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    forged = _tampered(direct_vm, "bulletin_digest", "f" * 64)
+    assert direct_vm.run_validator(leader_result=forged) is False
+
+
+def test_a_validator_refuses_a_coverage_digest_it_did_not_compute(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    forged = _tampered(direct_vm, "cms_digest", "a" * 64)
+    assert direct_vm.run_validator(leader_result=forged) is False
+
+
+def test_a_validator_refuses_reasoning_the_bulletin_does_not_support(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    """Reasoning cannot be diffed, so it is judged against the document instead.
+
+    The leader's rationale here is well formed, the right length, and agrees with a
+    decision the panel reached. It just says something the bulletin does not. The
+    validator reads it back against its own copy and says no.
+    """
+    direct_vm.sender = direct_alice
+    quote = real_quote(aetna_0157)
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1, quote=quote)
+
+    invented = (
+        "The bulletin states plainly that prior authorisation is never required for this "
+        "procedure in any circumstance, so the denial cannot stand on that footing."
+    )
+    forged = _tampered(direct_vm, "reasoning", invented)
+
+    direct_vm.clear_mocks()
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(quote), supported=False)
+    assert direct_vm.run_validator(leader_result=forged) is False
+
+
+def test_a_validator_refuses_reasoning_carrying_a_patient_identifier(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    """The tripwire now covers what the model wrote, not only what the member typed.
+
+    file_case screens the filing. Nothing used to screen the rationale, so a model that
+    echoed something patient shaped put it in immutable public state. The same guard
+    covers the quoted clause.
+    """
+    direct_vm.sender = direct_alice
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    leaky = (
+        "The criteria in the bulletin are met on the facts stated, and the member id "
+        "number A7741802263 appears on the denial letter the insurer sent."
+    )
+    assert direct_vm.run_validator(leader_result=_tampered(direct_vm, "reasoning", leaky)) is False
+
+
+def test_a_validator_refuses_an_empty_rationale(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+    assert direct_vm.run_validator(leader_result=_tampered(direct_vm, "reasoning", "")) is False
+
+
+def test_a_validator_refuses_a_section_the_registry_never_declared(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    """clause_section has to come from the closed set and match the agreed clause_id."""
+    direct_vm.sender = direct_alice
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    forged = _tampered(direct_vm, "clause_section", "Guaranteed Coverage For Everything")
+    assert direct_vm.run_validator(leader_result=forged) is False
+
+
+def test_a_validator_refuses_citations_it_did_not_assemble(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    """Citations are built from the registry and the fetched documents, never taken
+    from the model, so the two sides are byte identical or something is wrong."""
+    direct_vm.sender = direct_alice
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    forged = _tampered(
+        direct_vm,
+        "citations",
+        json.dumps([{"source": "A journal nobody fetched", "url": "https://example.invalid"}]),
+    )
+    assert direct_vm.run_validator(leader_result=forged) is False
+
+
+def test_a_validator_refuses_a_confidence_far_from_its_own(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    """Confidence is still not compared exactly, but it is no longer a free number.
+
+    Both readings clear the band here, so the old check passes. The figure that gets
+    written to state is twenty nine points away from what this node actually thought,
+    which is not a judgement call any more.
+    """
+    direct_vm.sender = direct_alice
+    quote = real_quote(aetna_0157)
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1, answer=verdict_json(quote, confidence=71))
+
+    direct_vm.clear_mocks()
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(quote, confidence=100))
+    assert direct_vm.run_validator() is False
+
+    # A gap inside the tolerance is still a difference of opinion, not an invention.
+    direct_vm.clear_mocks()
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(quote, confidence=90))
+    assert direct_vm.run_validator() is True
+
+
+def test_a_validator_refuses_a_payload_that_is_not_a_verdict(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    """A malformed leader result is a disagreement, never an exception."""
+    direct_vm.sender = direct_alice
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    assert direct_vm.run_validator(leader_result="not a verdict at all") is False
+    assert direct_vm.run_validator(leader_result={}) is False
+    assert direct_vm.run_validator(leader_result={"overturn_recommended": True}) is False
+
+
 # --------------------------------------------------------------- the appeal path
 
 def test_a_review_needs_a_bond(court, direct_vm, direct_alice, aetna_0157, cms_100_1):
@@ -640,29 +866,174 @@ def test_a_case_with_no_verdict_cannot_be_reviewed(court, direct_vm, direct_alic
         court.request_review(docket)
 
 
-def test_a_challenger_who_was_right_gets_the_bond_back(
-    court, direct_vm, direct_owner, direct_alice, direct_bob, aetna_0157, cms_100_1
+def test_the_full_appeal_lifecycle_releases_the_bond(
+    court, direct_vm, direct_alice, direct_bob, aetna_0157, cms_100_1
 ):
+    """Bond posted, fresh panel sits, status moves, bond comes back. End to end.
+
+    This is the path that used to be impossible to finish. request_review opened the
+    review, adjudicate overwrote the status with VERDICT, and resolve_review then
+    refused forever because the case was no longer under review. The bond stayed in the
+    contract with nobody able to ask for it. Every step below is asserted because the
+    defect lived in the joins between them.
+    """
+    direct_vm.sender = direct_alice
+    quote = real_quote(aetna_0157)
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1, quote=quote)
+    first_ruling = court.get_verdict(docket)["ruling_digest"]
+    assert court.get_case(docket)["status"] == "VERDICT"
+
+    # 1. The bond is posted and the case opens for a second reading.
+    direct_vm.sender = direct_bob
+    direct_vm.value = ATTO // 4
+    court.request_review(docket)
+    direct_vm.value = 0
+
+    case = court.get_case(docket)
+    assert case["status"] == "UNDER_REVIEW"
+    assert case["panel_round"] == 2
+    assert case["review_open"] is True
+    assert case["pre_review_ruling"] == first_ruling
+    assert int(court.court_stats()["bond_held_atto"]) == ATTO // 4
+
+    # 2. A fresh panel reads it the other way.
+    direct_vm.clear_mocks()
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(quote, overturn=False))
+    out = court.adjudicate(docket)
+
+    # 3. The status transition that was missing. Re-adjudication does NOT return the
+    #    case to VERDICT, because the bond posted against it has not been settled yet.
+    assert out["status"] == "REVIEWED"
+    case = court.get_case(docket)
+    assert case["status"] == "REVIEWED"
+    assert case["review_open"] is True
+    assert court.get_verdict(docket)["ruling_digest"] != first_ruling
+    assert int(court.court_stats()["bond_held_atto"]) == ATTO // 4
+
+    # 4. Resolution now works, which it did not before. The second panel moved the
+    #    verdict, so the challenger was right and the bond is theirs.
+    settled = court.resolve_review(docket)
+
+    assert settled["heard"] is True
+    assert settled["verdict_changed"] is True
+    assert settled["bond_returned"] is True
+    assert settled["awarded_to"] == str(direct_bob)
+    assert int(settled["bond_atto"]) == ATTO // 4
+
+    # 5. The bond left the contract and is claimable by the person who posted it.
+    assert int(court.bond_of(str(direct_bob))) == ATTO // 4
+    assert int(court.court_stats()["bond_held_atto"]) == 0
+
+    case = court.get_case(docket)
+    assert case["status"] == "VERDICT"
+    assert case["review_open"] is False
+    assert int(case["review_bond_atto"]) == 0
+    assert case["pre_review_ruling"] == ""
+
+    # 6. And it can actually be withdrawn, which is the only thing that makes the rest
+    #    of this mean anything.
+    assert int(court.withdraw_bond()) == ATTO // 4
+    assert int(court.bond_of(str(direct_bob))) == 0
+
+
+def test_a_second_panel_that_changes_nothing_forfeits_the_bond(
+    court, direct_vm, direct_alice, direct_bob, aetna_0157, cms_100_1
+):
+    """Who wins the bond is read off the chain, not asserted by an administrator."""
+    direct_vm.sender = direct_alice
+    quote = real_quote(aetna_0157)
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1, quote=quote)
+    first_ruling = court.get_verdict(docket)["ruling_digest"]
+
+    direct_vm.sender = direct_bob
+    direct_vm.value = ATTO // 4
+    court.request_review(docket)
+    direct_vm.value = 0
+
+    # The fresh panel lands in exactly the same place.
+    direct_vm.clear_mocks()
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(quote))
+    court.adjudicate(docket)
+    assert court.get_verdict(docket)["ruling_digest"] == first_ruling
+
+    settled = court.resolve_review(docket)
+    assert settled["heard"] is True
+    assert settled["verdict_changed"] is False
+    assert settled["bond_returned"] is False
+    assert int(court.bond_of(str(direct_bob))) == 0
+    assert int(court.court_stats()["bond_held_atto"]) == 0
+    assert court.get_case(docket)["status"] == "VERDICT"
+
+
+def test_a_reviewed_case_cannot_take_a_second_bond_before_it_resolves(
+    court, direct_vm, direct_alice, direct_bob, aetna_0157, cms_100_1
+):
+    """Taking a second bond would strand the first one, so it is refused."""
+    direct_vm.sender = direct_alice
+    quote = real_quote(aetna_0157)
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1, quote=quote)
+
+    direct_vm.sender = direct_bob
+    direct_vm.value = ATTO // 4
+    court.request_review(docket)
+    direct_vm.value = 0
+    direct_vm.clear_mocks()
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(quote, overturn=False))
+    court.adjudicate(docket)
+
+    direct_vm.value = ATTO // 4
+    with direct_vm.expect_revert("has not been resolved yet"):
+        court.request_review(docket)
+
+
+def test_a_reviewed_case_is_not_advanceable(
+    court, direct_vm, direct_alice, direct_bob, aetna_0157, cms_100_1
+):
+    """The panel has ruled but the appeal is not closed, so the pool does not move."""
+    direct_vm.sender = direct_alice
+    quote = real_quote(aetna_0157)
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1, quote=quote)
+
+    direct_vm.sender = direct_bob
+    direct_vm.value = ATTO // 4
+    court.request_review(docket)
+    direct_vm.value = 0
+    direct_vm.clear_mocks()
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(quote))
+    court.adjudicate(docket)
+
+    assert court.get_case(docket)["status"] == "REVIEWED"
+    gate = court.is_advanceable(docket)
+    assert gate["ok"] is False
+    assert "under review" in gate["reason"]
+
+    # And it becomes advanceable the moment the appeal actually closes.
+    court.resolve_review(docket)
+    assert court.is_advanceable(docket)["ok"] is True
+
+
+def test_a_review_the_panel_never_heard_can_be_abandoned_and_refunds(
+    court, direct_vm, direct_alice, direct_bob, aetna_0157, cms_100_1
+):
+    """The escape hatch. A source that dies must not take the bond with it."""
     direct_vm.sender = direct_alice
     docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
 
     direct_vm.sender = direct_bob
     direct_vm.value = ATTO // 4
     court.request_review(docket)
-
     direct_vm.value = 0
-    direct_vm.sender = direct_owner
-    out = court.resolve_review(docket, True)
 
+    out = court.resolve_review(docket)
+    assert out["heard"] is False
     assert out["bond_returned"] is True
-    assert out["awarded_to"] == str(direct_bob)
     assert int(court.bond_of(str(direct_bob))) == ATTO // 4
     assert int(court.court_stats()["bond_held_atto"]) == 0
     assert court.get_case(docket)["status"] == "VERDICT"
 
 
-def test_a_challenger_who_was_wrong_forfeits_the_bond(
-    court, direct_vm, direct_owner, direct_alice, direct_bob, aetna_0157, cms_100_1
+def test_a_passer_by_cannot_abandon_a_review_nobody_has_heard_yet(
+    court, direct_vm, direct_alice, direct_bob, direct_charlie, aetna_0157, cms_100_1
 ):
     direct_vm.sender = direct_alice
     docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
@@ -670,27 +1041,143 @@ def test_a_challenger_who_was_wrong_forfeits_the_bond(
     direct_vm.sender = direct_bob
     direct_vm.value = ATTO // 4
     court.request_review(docket)
-
     direct_vm.value = 0
+
+    direct_vm.sender = direct_charlie
+    with direct_vm.expect_revert("only the challenger or the court"):
+        court.resolve_review(docket)
+
+
+def test_anyone_may_close_a_review_the_panel_has_heard(
+    court, direct_vm, direct_alice, direct_bob, direct_charlie, aetna_0157, cms_100_1
+):
+    """The outcome is derived from chain state, so there is nothing to game.
+
+    Letting only an administrator close it would mean an administrator who never got
+    round to it could strand somebody else's money indefinitely.
+    """
+    direct_vm.sender = direct_alice
+    quote = real_quote(aetna_0157)
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1, quote=quote)
+
+    direct_vm.sender = direct_bob
+    direct_vm.value = ATTO // 4
+    court.request_review(docket)
+    direct_vm.value = 0
+    direct_vm.clear_mocks()
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(quote, overturn=False))
+    court.adjudicate(docket)
+
+    direct_vm.sender = direct_charlie
+    out = court.resolve_review(docket)
+    assert out["bond_returned"] is True
+    # Still awarded to whoever posted it, not to whoever happened to close it.
+    assert out["awarded_to"] == str(direct_bob)
+    assert int(court.bond_of(str(direct_bob))) == ATTO // 4
+    assert int(court.bond_of(str(direct_charlie))) == 0
+
+
+def test_a_case_with_no_open_review_cannot_be_resolved(
+    court, direct_vm, direct_alice, direct_owner, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
     direct_vm.sender = direct_owner
-    out = court.resolve_review(docket, False)
-
-    assert out["bond_returned"] is False
-    assert int(court.bond_of(str(direct_bob))) == 0
+    with direct_vm.expect_revert("has no open review"):
+        court.resolve_review(docket)
 
 
-def test_only_the_owner_may_resolve_a_review(
-    court, direct_vm, direct_alice, direct_bob, aetna_0157, cms_100_1
+def test_settling_a_case_mid_review_hands_the_bond_back(
+    court, direct_vm, direct_alice, direct_bob, direct_owner, aetna_0157, cms_100_1
 ):
+    """The insurer paying ends the argument. It must not also eat the bond."""
     direct_vm.sender = direct_alice
     docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
     direct_vm.sender = direct_bob
     direct_vm.value = ATTO // 4
     court.request_review(docket)
-
     direct_vm.value = 0
-    with direct_vm.expect_revert("not the court owner"):
-        court.resolve_review(docket, True)
+
+    direct_vm.sender = direct_owner
+    court.mark_settled(docket, str(9_000 * ATTO))
+
+    assert int(court.bond_of(str(direct_bob))) == ATTO // 4
+    assert int(court.court_stats()["bond_held_atto"]) == 0
+    assert court.get_case(docket)["status"] == "SETTLED"
+
+
+def test_rejecting_a_case_mid_review_hands_the_bond_back(
+    court, direct_vm, direct_alice, direct_bob, direct_owner, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    direct_vm.sender = direct_bob
+    direct_vm.value = ATTO // 4
+    court.request_review(docket)
+    direct_vm.value = 0
+
+    direct_vm.sender = direct_owner
+    court.reject_case(docket, "Filed against the wrong plan rule.")
+
+    assert int(court.bond_of(str(direct_bob))) == ATTO // 4
+    assert int(court.court_stats()["bond_held_atto"]) == 0
+    assert court.get_case(docket)["status"] == "REJECTED"
+
+
+def test_no_path_out_of_a_review_leaves_money_held(
+    court, direct_vm, direct_alice, direct_bob, direct_owner, aetna_0157, cms_100_1
+):
+    """The property the whole defect came down to: a bond never gets stuck.
+
+    Every exit from an open review is walked here, and each one has to end with the
+    contract holding nothing. A new exit added later without a release will fail this.
+    """
+    quote = real_quote(aetna_0157)
+
+    def open_a_review():
+        direct_vm.sender = direct_alice
+        direct_vm.value = 0
+        direct_vm.clear_mocks()
+        arm(direct_vm, aetna_0157, cms_100_1, verdict_json(quote))
+        docket = file_clean_case(court)
+        court.adjudicate(docket)
+        direct_vm.sender = direct_bob
+        direct_vm.value = ATTO // 4
+        court.request_review(docket)
+        direct_vm.value = 0
+        return docket
+
+    def re_adjudicate(docket):
+        direct_vm.clear_mocks()
+        arm(direct_vm, aetna_0157, cms_100_1, verdict_json(quote, overturn=False))
+        court.adjudicate(docket)
+
+    # Exit 1: heard, then resolved.
+    a = open_a_review()
+    re_adjudicate(a)
+    court.resolve_review(a)
+
+    # Exit 2: never heard, abandoned by the challenger.
+    b = open_a_review()
+    direct_vm.sender = direct_bob
+    court.resolve_review(b)
+
+    # Exit 3: settled while the review was open.
+    c = open_a_review()
+    direct_vm.sender = direct_owner
+    court.mark_settled(c, str(1_000 * ATTO))
+
+    # Exit 4: rejected while the review was open.
+    d = open_a_review()
+    direct_vm.sender = direct_owner
+    court.reject_case(d, "Should never have been filed.")
+
+    assert int(court.court_stats()["bond_held_atto"]) == 0
+    for docket in (a, b, c, d):
+        assert int(court.get_case(docket)["review_bond_atto"]) == 0
+        assert court.get_case(docket)["review_open"] is False
 
 
 def test_withdrawing_with_nothing_owed_is_refused(court, direct_vm, direct_bob):

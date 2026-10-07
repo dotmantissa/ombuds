@@ -34,12 +34,26 @@ codes, asks the question again, and then compares exactly four fields.
    never agree on $4,312.88, and they do not need to. They need to agree that the money
    at stake sits between two thousand and seven and a half thousand dollars.
 
-Free text is handled differently. The quoted clause is not compared between validators,
-because two readers can cite different sentences from the same section and both be right.
-Instead each validator verifies independently that the sentence it is about to commit
-actually appears, verbatim, in the document it just fetched. A quote that cannot be found
-raises an LLM error, which forces a rotation rather than locking a fabricated citation
-into state.
+Free text is bound, not compared. The leader's quote is not required to equal the
+validator's quote, because two readers can cite different sentences from the same section
+and both be right. What is required is that the sentence about to be written to state
+appears, verbatim, in the document the validator itself just fetched. The validator checks
+the LEADER's quote against its OWN copy of the bulletin, which is the only check that
+means anything, because the leader's payload is what gets committed. A quote that is not
+in the validator's copy is a fabrication and the validator disagrees.
+
+The leader's reasoning gets the same treatment one level up. It cannot be compared, so the
+validator judges it: given the bulletin the validator fetched and the decision the panel
+already agreed on, does this rationale rest on the document, or does it assert something
+the document does not say. A rationale that fails that check is a disagreement.
+
+The two document digests are compared exactly, against the digest the validator computed
+over its own fetch. They are the fingerprint the whole verdict is anchored to, so a digest
+nobody re-derived would be a digest nobody checked.
+
+The rule, stated once: every field this contract writes into Verdict is either compared
+between nodes, bound against a document the validator fetched itself, or computed by the
+contract from fields that already are. Nothing reaches state on the leader's word alone.
 
 The code audit is deliberately not asked of a model
 ---------------------------------------------------
@@ -85,14 +99,22 @@ GROUNDS = (
     "TIMELINESS",
 )
 
+# The life of a case. UNDER_REVIEW and REVIEWED are two different things and the
+# difference is the whole appeal path: UNDER_REVIEW means a bond is posted and the fresh
+# panel has not sat yet, REVIEWED means it has sat and the bond has not been settled yet.
+# Collapsing those two into one state is what used to strand the bond in the contract.
 CASE_STATUSES = (
     "FILED",
     "VERDICT",
     "UNDER_REVIEW",
+    "REVIEWED",
     "ADVANCED",
     "SETTLED",
     "REJECTED",
 )
+
+# A review is open, and its bond is still held, in exactly these two states.
+REVIEW_STATUSES = ("UNDER_REVIEW", "REVIEWED")
 
 # Payout bands in whole dollars. The web client carries the identical boundaries in
 # web/lib/bands.ts and any change has to be made in both places or the UI will label a
@@ -180,6 +202,11 @@ class Case:
     review_requester: str
     settled_atto: u256
     advanced_atto: u256
+    # The ruling digest as it stood the moment a review was requested. Kept so that
+    # resolving the review can work out for itself whether the second panel actually
+    # moved anything, rather than taking an administrator's word for it. Appended at the
+    # end of the dataclass because storage layout is positional.
+    pre_review_ruling: str
 
 
 @allow_storage
@@ -200,6 +227,10 @@ class Verdict:
     digest: str
     adjudicated_at: str
     panel_round: u256
+    # The same fingerprint as `digest` but with the round number left out, so it answers
+    # "is this the same ruling" rather than "is this the same transaction". Appended at
+    # the end of the dataclass because storage layout is positional.
+    ruling_digest: str
 
 
 # -------------------------------------------------------------------- text normalisation
@@ -388,26 +419,67 @@ def _match_section(candidate: str, allowed: tuple) -> str:
     )
 
 
+# A quote has to be long enough that finding it in a document means something. Twenty
+# four characters is about half a clause, which no bulletin contains by accident.
+QUOTE_MIN_CHARS = 24
+
+# The longest leading run accepted when a model trimmed a sentence mid way.
+QUOTE_PROBE_CHARS = 120
+
+# How far two honest readers may sit apart on confidence before the gap stops looking
+# like a judgement call. They already have to land on the same side of the line that
+# releases money; this stops a leader writing any number it likes under that line.
+CONFIDENCE_TOLERANCE = 25
+
+
+def _quote_in(quote: str, haystack: str) -> bool:
+    """Is this exact run of text in that document. No judgement, no model, no leniency."""
+    if len(quote) < QUOTE_MIN_CHARS:
+        return False
+    return quote in haystack
+
+
 def _verify_quote(quote: str, haystack: str) -> str:
     """A citation has to exist. Verified against the document this node just fetched.
 
-    Not compared between validators, because two readers may quote different sentences
-    from the same section and both be correct. Compared against the source instead, which
-    is the check that actually matters.
+    Returns the exact run of text that was found, which is what the caller commits. The
+    returned value is always a verbatim substring of `haystack`, and that property is
+    what lets a validator re-check the committed value later with a plain `in`.
     """
     cleaned = _collapse(quote)
-    if len(cleaned) < 24:
+    if len(cleaned) < QUOTE_MIN_CHARS:
         raise gl.vm.UserError(f"{ERROR_LLM} quoted clause was too short to verify")
     if cleaned in haystack:
         return cleaned
     # Allow a quote that was trimmed mid sentence by matching a generous leading run.
-    probe = cleaned[:120]
+    probe = cleaned[:QUOTE_PROBE_CHARS]
     if len(probe) >= 60 and probe in haystack:
         return probe
     raise gl.vm.UserError(
         f"{ERROR_LLM} quoted clause does not appear in the fetched bulletin, "
         "the citation was fabricated"
     )
+
+
+def _phi_kinds(text: str) -> list:
+    """Which tripwire patterns this text trips. Empty means clean."""
+    return [kind for kind, pattern in _PHI_PATTERNS if pattern.search(text) is not None]
+
+
+def _assert_no_phi(text: str, label: str) -> None:
+    """The tripwire, applied to model authored text on its way to a public chain.
+
+    file_case screens what the member typed. This screens what the model wrote, because
+    the bulletin it was reading is a public document but the rationale it composes is
+    free text and ends up in immutable state. A model that echoes something patient
+    shaped out of a prompt must not be the way it gets there.
+    """
+    found = _phi_kinds(text)
+    if len(found) > 0:
+        raise gl.vm.UserError(
+            f"{ERROR_LLM} the {label} contains something that looks like "
+            f"{', '.join(found)}, which cannot be written to a public chain"
+        )
 
 
 def _handle_leader_error(leaders_res, leader_fn) -> bool:
@@ -484,6 +556,359 @@ def _audit_summary(findings: list) -> str:
 
 def _split_codes(raw: str) -> tuple:
     return tuple([piece.strip().upper() for piece in raw.split("|") if piece.strip() != ""])
+
+
+# ------------------------------------------------------------------ the adjudication
+#
+# Module level on purpose. These run inside the nondet block, on the leader and
+# again on every validator, and keeping them out of a closure is what makes it
+# checkable that both sides execute identical code.
+
+
+def _gather_evidence(brief: dict) -> dict:
+    """Everything this node reads for itself, before any model is involved.
+
+    Split out from the decision on purpose. A validator needs its own copy of
+    the bulletin in hand to bind the leader's quote and digests against, and it
+    can only have that if fetching is a step it can run separately. The returned
+    text never leaves the node: leader_fn hands back the derived verdict only,
+    so a fourteen thousand character document is not shipped to every validator.
+    """
+    bulletin_url = brief["bulletin_url"]
+    fetch_mode = brief["fetch_mode"]
+    cms_url = brief["cms_url"]
+    cpt_tuple = brief["cpt_tuple"]
+    icd_tuple = brief["icd_tuple"]
+    bulletin = _bulletin_text(bulletin_url, fetch_mode)
+    coverage = _cms_rule_text(cms_url)
+
+    def run_audit() -> list:
+        return audit_codes(cpt_tuple, icd_tuple, bulletin)
+
+    # The audit runs in a sandbox so a malformed code cannot take the whole
+    # transaction down with it. The sandbox is an isolation boundary, not a
+    # source of truth: run_audit is pure, deterministic and reads nothing but its
+    # arguments, so if the sandbox is unavailable the same function run inline
+    # produces the identical answer. Every validator computes it the same way
+    # either path, which is what the comparison depends on.
+    sandboxed = None
+    try:
+        sandboxed = gl.vm.unpack_result(gl.vm.spawn_sandbox(run_audit))
+    except Exception:
+        sandboxed = None
+    findings = sandboxed if isinstance(sandboxed, list) else run_audit()
+
+    return {"bulletin": bulletin, "coverage": coverage, "findings": findings}
+
+def _decide(brief: dict, evidence: dict) -> dict:
+    """Ask the question, parse the answer, and commit to nothing a document
+    this node fetched does not carry."""
+    bulletin_url = brief["bulletin_url"]
+    insurer = brief["insurer"]
+    family = brief["family"]
+    state_code = brief["state_code"]
+    service_month = brief["service_month"]
+    reason_code = brief["reason_code"]
+    disputed_usd = brief["disputed_usd"]
+    rationale = brief["rationale"]
+    cpt_tuple = brief["cpt_tuple"]
+    icd_tuple = brief["icd_tuple"]
+    bulletin_number = brief["bulletin_number"]
+    bulletin_title = brief["bulletin_title"]
+    sections = brief["sections"]
+    cms_display_id = brief["cms_display_id"]
+    cms_url = brief["cms_url"]
+    guideline_url = brief["guideline_url"]
+    allowed_grounds = brief["allowed_grounds"]
+    bulletin = str(evidence["bulletin"])
+    coverage = str(evidence["coverage"])
+    findings = evidence["findings"]
+    audit_text = _audit_summary(findings)
+
+    prompt = f"""You are adjudicating a denied health insurance claim against the
+coverage rule the insurer itself published. You are deciding a contract question, not a
+medical one. Never comment on whether a treatment is advisable for anyone.
+
+THE DENIAL
+Insurer: {insurer}
+Procedure family: {family}
+Member state: {state_code}
+Month of service: {service_month}
+Denial reason code: {reason_code}
+Amount in dispute: {disputed_usd} US dollars
+The insurer's stated rationale, verbatim: "{rationale}"
+CPT or HCPCS codes billed: {', '.join(cpt_tuple) if len(cpt_tuple) > 0 else 'none supplied'}
+ICD-10-CM diagnosis codes: {', '.join(icd_tuple) if len(icd_tuple) > 0 else 'none supplied'}
+
+GROUND TRUTH FROM A DETERMINISTIC CODE AUDIT. This was computed by running code, not by
+reading. Do not override it, do not re-derive it, and do not contradict it.
+{audit_text}
+
+THE INSURER'S OWN PUBLISHED RULE
+{insurer} bulletin {bulletin_number}, titled "{bulletin_title}".
+Sections this bulletin publishes, and the only ones you may cite:
+{chr(10).join('- ' + s for s in sections)}
+
+Bulletin text:
+{_window(bulletin, 14000)}
+
+THE FEDERAL COVERAGE DETERMINATION
+{('CMS ' + cms_display_id) if cms_display_id != '' else 'None applies to this procedure.'}
+{_window(coverage, 6000) if coverage != '' else ''}
+
+YOUR TASK
+Decide whether this denial is consistent with the rule above. The single most persuasive
+finding available to you is the insurer's own published text contradicting its own denial
+letter, so look for that first.
+
+Choose exactly one ground from this closed list:
+- MEDICAL_NECESSITY: the bulletin's own criteria are met on the facts stated
+- CODING_ERROR: the codes billed are handled differently by the bulletin than the denial assumed
+- NETWORK_STATUS: the denial rests on a network or provider status question
+- PRIOR_AUTH_DEFECT: the prior authorisation requirement was misapplied or did not apply
+- TIMELINESS: the denial rests on a filing or notice deadline that was misapplied
+
+Quote one sentence from the bulletin text above, copied exactly, character for character,
+that carries your reasoning. Do not paraphrase it and do not stitch two sentences
+together. If you cannot find a sentence that supports your conclusion, say the denial
+stands.
+
+Estimate what the member could recover, in whole US dollars, capped at the amount in
+dispute. If the denial stands, that number is zero.
+
+Return JSON with exactly these keys:
+{{"overturn_recommended": true or false,
+  "ground": "one of the five values above",
+  "clause_section": "the exact section heading you are citing from the list",
+  "clause_quote": "the verbatim sentence",
+  "recoverable_usd": a whole number,
+  "confidence": a whole number from 0 to 100,
+  "reasoning": "two or three sentences a person who is not a lawyer can follow"}}
+
+Write the reasoning in plain prose with no dashes used as punctuation. Use a comma or a
+full stop where you would reach for a dash. Hyphens inside a word such as "Roux-en-Y" are
+fine. This is a style requirement for the letter this ends up in, and it has no bearing on
+the decision."""
+
+    answer = gl.nondet.exec_prompt(prompt, response_format="json")
+    if not isinstance(answer, dict):
+        raise gl.vm.UserError(f"{ERROR_LLM} model returned {type(answer)} rather than JSON")
+
+    overturn = _parse_bool(
+        _pick(answer, "overturn_recommended", ("overturn", "overturned", "decision"))
+    )
+
+    ground_raw = _pick(answer, "ground", ("ground_of_appeal", "basis", "reason"))
+    if ground_raw is None:
+        raise gl.vm.UserError(f"{ERROR_LLM} missing 'ground'")
+    ground = str(ground_raw).strip().upper().replace(" ", "_").replace("-", "_")
+    if ground not in allowed_grounds:
+        raise gl.vm.UserError(f"{ERROR_LLM} '{ground}' is not one of the five grounds")
+
+    section_raw = _pick(answer, "clause_section", ("section", "clause", "clause_id"))
+    section = _match_section(str(section_raw if section_raw is not None else ""), sections)
+
+    quote_raw = _pick(answer, "clause_quote", ("quote", "citation", "excerpt"))
+    quote = _verify_quote(str(quote_raw if quote_raw is not None else ""), bulletin)
+
+    confidence = _parse_int(
+        _pick(answer, "confidence", ("confidence_score", "certainty")), "confidence"
+    )
+    if confidence < 0:
+        confidence = 0
+    if confidence > 100:
+        confidence = 100
+
+    if overturn:
+        recoverable = _parse_int(
+            _pick(answer, "recoverable_usd", ("recoverable", "recoverable_amount", "amount")),
+            "recoverable_usd",
+        )
+        if recoverable < 0:
+            recoverable = 0
+        if recoverable > disputed_usd:
+            recoverable = disputed_usd
+    else:
+        recoverable = 0
+
+    band = band_for_usd(recoverable) if overturn else 0
+
+    reasoning = str(
+        _pick(answer, "reasoning", ("analysis", "explanation", "rationale")) or ""
+    ).strip()
+    if len(reasoning) < 20:
+        raise gl.vm.UserError(f"{ERROR_LLM} the verdict carried no readable reasoning")
+
+    # The tripwire, over the two fields the model authored. Everything else in
+    # this payload is either an enum, a number, or copied out of a document.
+    # These two are free text on their way to immutable public state.
+    _assert_no_phi(reasoning, "verdict reasoning")
+    _assert_no_phi(quote, "quoted clause")
+
+    # Citations are assembled here, from the documents this node actually fetched,
+    # rather than taken from the model. A model cannot invent a source it was not
+    # given.
+    citations = [
+        {
+            "source": f"{insurer} clinical policy bulletin {bulletin_number}",
+            "title": bulletin_title,
+            "url": bulletin_url,
+            "locator": section,
+            "digest": _digest(bulletin),
+        }
+    ]
+    if coverage != "":
+        citations.append(
+            {
+                "source": f"CMS National Coverage Determination {cms_display_id}",
+                "title": "Medicare coverage criteria",
+                "url": cms_url,
+                "locator": "indications and limitations of coverage",
+                "digest": _digest(coverage),
+            }
+        )
+    if guideline_url != "":
+        citations.append(
+            {
+                "source": "Published clinical guideline",
+                "title": "Guideline for the indication",
+                "url": guideline_url,
+                "locator": "",
+                "digest": "",
+            }
+        )
+
+    return {
+        "overturn_recommended": overturn,
+        "ground": ground,
+        "clause_id": f"{bulletin_number}#{_slug(section)}",
+        "clause_section": section,
+        "clause_quote": quote[:900],
+        "recoverable_band": band,
+        "confidence": confidence,
+        "reasoning": reasoning[:1200],
+        "citations": json.dumps(citations, sort_keys=True),
+        "bulletin_digest": _digest(bulletin),
+        "cms_digest": _digest(coverage) if coverage != "" else "",
+        "code_findings": json.dumps(findings, sort_keys=True),
+    }
+
+def _leader_run(brief: dict) -> dict:
+    """Read the documents, then decide. What a node does when it is the leader,
+    and what every validator does again before it compares anything."""
+    return _decide(brief, _gather_evidence(brief))
+
+def _bound_to_sources(brief: dict, leader: dict, evidence: dict) -> bool:
+    """Can the LEADER's payload be re-derived from documents THIS node fetched.
+
+    This is the half of consensus the field comparisons cannot do. The leader's
+    payload is what gets written to state, so every part of it that is prose or
+    a fingerprint has to be checkable against the bulletin this validator pulled
+    down itself. Nothing here trusts a single value the leader sent.
+    """
+    sections = brief["sections"]
+    bulletin_number = brief["bulletin_number"]
+    bulletin = str(evidence["bulletin"])
+    coverage = str(evidence["coverage"])
+
+    # The quote. Not compared with the validator's own quote, which may legally
+    # differ, but required to exist verbatim in the validator's own copy of the
+    # document. A sentence the model invented is in nobody's copy.
+    leader_quote = str(leader.get("clause_quote", ""))
+    if not _quote_in(leader_quote, bulletin):
+        return False
+
+    # Model authored text does not get to carry patient shaped strings onto a
+    # public chain just because it was the leader that wrote it.
+    if len(_phi_kinds(leader_quote)) > 0:
+        return False
+    leader_reasoning = str(leader.get("reasoning", ""))
+    if len(leader_reasoning) < 20 or len(leader_reasoning) > 1200:
+        return False
+    if len(_phi_kinds(leader_reasoning)) > 0:
+        return False
+
+    # The section being cited has to be one the registry declared, and it has to
+    # be the section the already compared clause_id was built from. That makes
+    # clause_section a derivative of a field consensus has agreed on rather than
+    # a free string the leader chose.
+    leader_section = str(leader.get("clause_section", ""))
+    if leader_section not in sections:
+        return False
+    if f"{bulletin_number}#{_slug(leader_section)}" != str(leader.get("clause_id", "")):
+        return False
+
+    # The fingerprints the whole verdict is anchored to. Compared against digests
+    # this node computed over its own fetch, because a digest nobody re-derived
+    # is a digest nobody checked.
+    if str(leader.get("bulletin_digest", "")) != _digest(bulletin):
+        return False
+    expected_cms = _digest(coverage) if coverage != "" else ""
+    if str(leader.get("cms_digest", "")) != expected_cms:
+        return False
+
+    return True
+
+def _reasoning_is_supported(leader: dict, evidence: dict) -> bool:
+    """Does the leader's rationale rest on the document, or on nothing.
+
+    Reasoning cannot be compared between nodes, so it is judged instead. The
+    validator does not write a second rationale and diff it, which would fail on
+    wording every time. It reads the bulletin it fetched and asks whether the
+    sentences about to become an immutable ruling are supported by it.
+
+    Deliberately narrow. Style, length, emphasis and choice of detail are not
+    grounds to reject. A claim about what the insurer's rule says that the rule
+    does not say is.
+    """
+    bulletin = str(evidence["bulletin"])
+    decision = (
+        "overturn the denial"
+        if bool(leader.get("overturn_recommended", False))
+        else "let the denial stand"
+    )
+    check = f"""You are checking one paragraph of reasoning against the document it
+claims to rest on. You are not re-deciding the case and you are not being asked whether you
+agree with the decision.
+
+THE INSURER'S PUBLISHED RULE, as fetched for this check:
+{_window(bulletin, 12000)}
+
+THE PANEL HAS ALREADY AGREED THE DECISION IS: {decision}
+THE SECTION CITED: {str(leader.get('clause_section', ''))}
+THE SENTENCE QUOTED FROM THE RULE: "{str(leader.get('clause_quote', ''))}"
+
+THE REASONING TO CHECK:
+"{str(leader.get('reasoning', ''))}"
+
+Answer one question. Is every material claim this reasoning makes about the insurer's rule
+supported by the document above, and is the reasoning consistent with the decision the
+panel already agreed on?
+
+Say false only for a real defect: a statement about what the rule requires, covers or
+excludes that the document does not support, a citation to something that is not in the
+document, or an argument that points at the opposite decision. Do not say false because
+the wording is different from how you would put it, because it is short, because it
+leaves out a detail you would have mentioned, or because you would have reasoned a
+different way to the same place.
+
+Return JSON: {{"supported": true or false, "problem": "one short sentence, empty if supported"}}"""
+
+    try:
+        answer = gl.nondet.exec_prompt(check, response_format="json")
+    except Exception:
+        # A judgement that could not be made is not a judgement in the leader's
+        # favour. Disagreeing rotates the panel, which is the designed response.
+        return False
+    if not isinstance(answer, dict):
+        return False
+    raw = _pick(answer, "supported", ("is_supported", "faithful", "valid", "ok"))
+    if raw is None:
+        return False
+    try:
+        return _parse_bool(raw)
+    except gl.vm.UserError:
+        return False
 
 
 # ----------------------------------------------------------------------------- the contract
@@ -594,6 +1019,8 @@ class OmbudsCourt(gl.Contract):
             "review_requester": case.review_requester,
             "settled_atto": str(int(case.settled_atto)),
             "advanced_atto": str(int(case.advanced_atto)),
+            "pre_review_ruling": case.pre_review_ruling,
+            "review_open": case.status in REVIEW_STATUSES,
             "has_verdict": self.verdicts.get(docket) is not None,
         }
 
@@ -618,6 +1045,7 @@ class OmbudsCourt(gl.Contract):
             "bulletin_digest": verdict.bulletin_digest,
             "cms_digest": verdict.cms_digest,
             "digest": verdict.digest,
+            "ruling_digest": verdict.ruling_digest,
             "adjudicated_at": verdict.adjudicated_at,
             "panel_round": int(verdict.panel_round),
             "crosses_confidence_band": int(verdict.confidence) >= int(self.min_confidence),
@@ -656,7 +1084,9 @@ class OmbudsCourt(gl.Contract):
                 "reason": "The verdict sits below the confidence band the pool requires.",
                 "band": int(verdict.recoverable_band),
             }
-        if case.status == "UNDER_REVIEW":
+        if case.status in REVIEW_STATUSES:
+            # REVIEWED counts too. The second panel has ruled but the bond has not been
+            # settled, so the appeal is not closed and the pool does not move yet.
             return {"ok": False, "reason": "The verdict is under review.", "band": int(verdict.recoverable_band)}
         if int(case.advanced_atto) > 0:
             return {"ok": False, "reason": "An advance has already been made.", "band": int(verdict.recoverable_band)}
@@ -843,6 +1273,7 @@ class OmbudsCourt(gl.Contract):
             review_requester="",
             settled_atto=u256(0),
             advanced_atto=u256(0),
+            pre_review_ruling="",
         )
         self.dockets.append(docket)
         self._bump_status("FILED", 1)
@@ -860,9 +1291,12 @@ class OmbudsCourt(gl.Contract):
         contract storage, because the closure is serialised and shipped to every node.
         """
         case = self._case_or_raise(docket)
-        if case.status not in ("FILED", "UNDER_REVIEW"):
+        # Read the status into a plain local. `case` is a live view onto the storage
+        # slot, so this value has to be captured before anything below rewrites it.
+        entry_status = str(case.status)
+        if entry_status not in ("FILED", "UNDER_REVIEW"):
             raise gl.vm.UserError(
-                f"{ERROR_EXPECTED} case '{docket}' is {case.status} and is not awaiting a verdict"
+                f"{ERROR_EXPECTED} case '{docket}' is {entry_status} and is not awaiting a verdict"
             )
 
         registry = gl.get_contract_at(self.registry)
@@ -899,217 +1333,98 @@ class OmbudsCourt(gl.Contract):
         confidence_floor = int(self.min_confidence)
         allowed_grounds = GROUNDS
 
+        # Everything the nondet work needs, as plain values. The heavy lifting lives in
+        # module level functions rather than closures so that the leader path and the
+        # validator path are provably the same code, and so the fetch step can be run on
+        # its own by a validator that needs its own copy of the bulletin to check against.
+        brief = {
+            "bulletin_url": bulletin_url,
+            "fetch_mode": fetch_mode,
+            "cms_url": cms_url,
+            "cpt_tuple": cpt_tuple,
+            "icd_tuple": icd_tuple,
+            "insurer": insurer,
+            "family": family,
+            "state_code": state_code,
+            "service_month": service_month,
+            "reason_code": reason_code,
+            "disputed_usd": disputed_usd,
+            "rationale": rationale,
+            "bulletin_number": bulletin_number,
+            "bulletin_title": bulletin_title,
+            "sections": sections,
+            "cms_display_id": cms_display_id,
+            "guideline_url": guideline_url,
+            "allowed_grounds": allowed_grounds,
+        }
+
         def leader_fn() -> dict:
-            bulletin = _bulletin_text(bulletin_url, fetch_mode)
-            coverage = _cms_rule_text(cms_url)
-
-            def run_audit() -> list:
-                return audit_codes(cpt_tuple, icd_tuple, bulletin)
-
-            # The audit runs in a sandbox so a malformed code cannot take the whole
-            # transaction down with it. The sandbox is an isolation boundary, not a
-            # source of truth: run_audit is pure, deterministic and reads nothing but its
-            # arguments, so if the sandbox is unavailable the same function run inline
-            # produces the identical answer. Every validator computes it the same way
-            # either path, which is what the comparison depends on.
-            sandboxed = None
-            try:
-                sandboxed = gl.vm.unpack_result(gl.vm.spawn_sandbox(run_audit))
-            except Exception:
-                sandboxed = None
-            findings = sandboxed if isinstance(sandboxed, list) else run_audit()
-            audit_text = _audit_summary(findings)
-
-            prompt = f"""You are adjudicating a denied health insurance claim against the
-coverage rule the insurer itself published. You are deciding a contract question, not a
-medical one. Never comment on whether a treatment is advisable for anyone.
-
-THE DENIAL
-Insurer: {insurer}
-Procedure family: {family}
-Member state: {state_code}
-Month of service: {service_month}
-Denial reason code: {reason_code}
-Amount in dispute: {disputed_usd} US dollars
-The insurer's stated rationale, verbatim: "{rationale}"
-CPT or HCPCS codes billed: {', '.join(cpt_tuple) if len(cpt_tuple) > 0 else 'none supplied'}
-ICD-10-CM diagnosis codes: {', '.join(icd_tuple) if len(icd_tuple) > 0 else 'none supplied'}
-
-GROUND TRUTH FROM A DETERMINISTIC CODE AUDIT. This was computed by running code, not by
-reading. Do not override it, do not re-derive it, and do not contradict it.
-{audit_text}
-
-THE INSURER'S OWN PUBLISHED RULE
-{insurer} bulletin {bulletin_number}, titled "{bulletin_title}".
-Sections this bulletin publishes, and the only ones you may cite:
-{chr(10).join('- ' + s for s in sections)}
-
-Bulletin text:
-{_window(bulletin, 14000)}
-
-THE FEDERAL COVERAGE DETERMINATION
-{('CMS ' + cms_display_id) if cms_display_id != '' else 'None applies to this procedure.'}
-{_window(coverage, 6000) if coverage != '' else ''}
-
-YOUR TASK
-Decide whether this denial is consistent with the rule above. The single most persuasive
-finding available to you is the insurer's own published text contradicting its own denial
-letter, so look for that first.
-
-Choose exactly one ground from this closed list:
-- MEDICAL_NECESSITY: the bulletin's own criteria are met on the facts stated
-- CODING_ERROR: the codes billed are handled differently by the bulletin than the denial assumed
-- NETWORK_STATUS: the denial rests on a network or provider status question
-- PRIOR_AUTH_DEFECT: the prior authorisation requirement was misapplied or did not apply
-- TIMELINESS: the denial rests on a filing or notice deadline that was misapplied
-
-Quote one sentence from the bulletin text above, copied exactly, character for character,
-that carries your reasoning. Do not paraphrase it and do not stitch two sentences
-together. If you cannot find a sentence that supports your conclusion, say the denial
-stands.
-
-Estimate what the member could recover, in whole US dollars, capped at the amount in
-dispute. If the denial stands, that number is zero.
-
-Return JSON with exactly these keys:
-{{"overturn_recommended": true or false,
-  "ground": "one of the five values above",
-  "clause_section": "the exact section heading you are citing from the list",
-  "clause_quote": "the verbatim sentence",
-  "recoverable_usd": a whole number,
-  "confidence": a whole number from 0 to 100,
-  "reasoning": "two or three sentences a person who is not a lawyer can follow"}}
-
-Write the reasoning in plain prose with no dashes used as punctuation. Use a comma or a
-full stop where you would reach for a dash. Hyphens inside a word such as "Roux-en-Y" are
-fine. This is a style requirement for the letter this ends up in, and it has no bearing on
-the decision."""
-
-            answer = gl.nondet.exec_prompt(prompt, response_format="json")
-            if not isinstance(answer, dict):
-                raise gl.vm.UserError(f"{ERROR_LLM} model returned {type(answer)} rather than JSON")
-
-            overturn = _parse_bool(
-                _pick(answer, "overturn_recommended", ("overturn", "overturned", "decision"))
-            )
-
-            ground_raw = _pick(answer, "ground", ("ground_of_appeal", "basis", "reason"))
-            if ground_raw is None:
-                raise gl.vm.UserError(f"{ERROR_LLM} missing 'ground'")
-            ground = str(ground_raw).strip().upper().replace(" ", "_").replace("-", "_")
-            if ground not in allowed_grounds:
-                raise gl.vm.UserError(f"{ERROR_LLM} '{ground}' is not one of the five grounds")
-
-            section_raw = _pick(answer, "clause_section", ("section", "clause", "clause_id"))
-            section = _match_section(str(section_raw if section_raw is not None else ""), sections)
-
-            quote_raw = _pick(answer, "clause_quote", ("quote", "citation", "excerpt"))
-            quote = _verify_quote(str(quote_raw if quote_raw is not None else ""), bulletin)
-
-            confidence = _parse_int(
-                _pick(answer, "confidence", ("confidence_score", "certainty")), "confidence"
-            )
-            if confidence < 0:
-                confidence = 0
-            if confidence > 100:
-                confidence = 100
-
-            if overturn:
-                recoverable = _parse_int(
-                    _pick(answer, "recoverable_usd", ("recoverable", "recoverable_amount", "amount")),
-                    "recoverable_usd",
-                )
-                if recoverable < 0:
-                    recoverable = 0
-                if recoverable > disputed_usd:
-                    recoverable = disputed_usd
-            else:
-                recoverable = 0
-
-            band = band_for_usd(recoverable) if overturn else 0
-
-            reasoning = str(
-                _pick(answer, "reasoning", ("analysis", "explanation", "rationale")) or ""
-            ).strip()
-            if len(reasoning) < 20:
-                raise gl.vm.UserError(f"{ERROR_LLM} the verdict carried no readable reasoning")
-
-            # Citations are assembled here, from the documents this node actually fetched,
-            # rather than taken from the model. A model cannot invent a source it was not
-            # given.
-            citations = [
-                {
-                    "source": f"{insurer} clinical policy bulletin {bulletin_number}",
-                    "title": bulletin_title,
-                    "url": bulletin_url,
-                    "locator": section,
-                    "digest": _digest(bulletin),
-                }
-            ]
-            if coverage != "":
-                citations.append(
-                    {
-                        "source": f"CMS National Coverage Determination {cms_display_id}",
-                        "title": "Medicare coverage criteria",
-                        "url": cms_url,
-                        "locator": "indications and limitations of coverage",
-                        "digest": _digest(coverage),
-                    }
-                )
-            if guideline_url != "":
-                citations.append(
-                    {
-                        "source": "Published clinical guideline",
-                        "title": "Guideline for the indication",
-                        "url": guideline_url,
-                        "locator": "",
-                        "digest": "",
-                    }
-                )
-
-            return {
-                "overturn_recommended": overturn,
-                "ground": ground,
-                "clause_id": f"{bulletin_number}#{_slug(section)}",
-                "clause_section": section,
-                "clause_quote": quote[:900],
-                "recoverable_band": band,
-                "confidence": confidence,
-                "reasoning": reasoning[:1200],
-                "citations": json.dumps(citations, sort_keys=True),
-                "bulletin_digest": _digest(bulletin),
-                "cms_digest": _digest(coverage) if coverage != "" else "",
-                "code_findings": json.dumps(findings, sort_keys=True),
-            }
+            return _leader_run(brief)
 
         def validator_fn(leaders_res: gl.vm.Result) -> bool:
             if not isinstance(leaders_res, gl.vm.Return):
                 return _handle_leader_error(leaders_res, leader_fn)
 
             leader = leaders_res.calldata
-            mine = leader_fn()
+            if not isinstance(leader, dict):
+                return False
+
+            # Read the documents for ourselves first. Everything below is checked
+            # against this fetch, never against anything the leader said about it.
+            evidence = _gather_evidence(brief)
+            mine = _decide(brief, evidence)
+
+            # ---- part one: the fields two independent readings must agree on --------
 
             # The decision itself.
-            if bool(leader["overturn_recommended"]) != bool(mine["overturn_recommended"]):
+            if bool(leader.get("overturn_recommended", False)) != bool(mine["overturn_recommended"]):
                 return False
             # The ground, which changes the letter and the statute filed under.
-            if str(leader["ground"]) != str(mine["ground"]):
+            if str(leader.get("ground", "")) != str(mine["ground"]):
                 return False
             # The clause being turned against the denial. The anti hallucination clamp.
-            if str(leader["clause_id"]) != str(mine["clause_id"]):
+            if str(leader.get("clause_id", "")) != str(mine["clause_id"]):
                 return False
             # The money, as a band rather than a figure.
-            if int(leader["recoverable_band"]) != int(mine["recoverable_band"]):
+            try:
+                leader_band = int(leader.get("recoverable_band", -1))
+                leader_confidence = int(leader.get("confidence", -1))
+            except (TypeError, ValueError):
                 return False
-            # Both readings must land on the same side of the line that releases an advance.
-            leader_clears = int(leader["confidence"]) >= confidence_floor
-            mine_clears = int(mine["confidence"]) >= confidence_floor
-            if leader_clears != mine_clears:
+            if leader_band != int(mine["recoverable_band"]):
+                return False
+            # Both readings must land on the same side of the line that releases an advance,
+            # and the figure that gets written has to be close enough to this node's own
+            # reading to be a judgement rather than an invention.
+            mine_confidence = int(mine["confidence"])
+            if leader_confidence < 0 or leader_confidence > 100:
+                return False
+            if (leader_confidence >= confidence_floor) != (mine_confidence >= confidence_floor):
+                return False
+            if abs(leader_confidence - mine_confidence) > CONFIDENCE_TOLERANCE:
                 return False
             # The deterministic code audit must agree exactly. It is computed by code, so
             # any difference means the two nodes were not looking at the same bulletin.
-            if str(leader["code_findings"]) != str(mine["code_findings"]):
+            if str(leader.get("code_findings", "")) != str(mine["code_findings"]):
                 return False
+            # Citations are assembled from the registry rule and the fetched documents,
+            # so once the digests below match these are byte identical or something is
+            # wrong with what the leader was reading.
+            if str(leader.get("citations", "")) != str(mine["citations"]):
+                return False
+
+            # ---- part two: the fields only the source document can settle ----------
+            #
+            # Everything above compares the leader against a second opinion. That is not
+            # enough on its own, because the leader's payload is what gets committed and
+            # the prose in it was never put to a vote. These two checks bind the exact
+            # strings heading for state against the bulletin this node fetched itself.
+
+            if not _bound_to_sources(brief, leader, evidence):
+                return False
+            if not _reasoning_is_supported(leader, evidence):
+                return False
+
             return True
 
         outcome = gl.vm.run_nondet_unsafe(leader_fn, validator_fn)
@@ -1121,21 +1436,27 @@ the decision."""
         confidence = int(outcome["confidence"])
         round_number = int(case.panel_round)
 
-        digest_payload = json.dumps(
-            {
-                "docket": docket,
-                "plan_id": case.plan_id,
-                "overturn_recommended": overturn,
-                "ground": ground,
-                "clause_id": str(outcome["clause_id"]),
-                "recoverable_band": band,
-                "bulletin_digest": str(outcome["bulletin_digest"]),
-                "cms_digest": str(outcome["cms_digest"]),
-                "panel_round": round_number,
-                "evidence_sha256": case.evidence_sha256,
-            },
-            sort_keys=True,
-        )
+        # Two fingerprints, and the difference between them is what makes an appeal
+        # settleable. `ruling` covers what was decided. `digest` is `ruling` plus the
+        # round it was decided in, which is the right identity for a single
+        # adjudication but the wrong thing to ask "did the second panel change its
+        # mind" with, because the round number guarantees it always did.
+        ruling_fields = {
+            "docket": docket,
+            "plan_id": case.plan_id,
+            "overturn_recommended": overturn,
+            "ground": ground,
+            "clause_id": str(outcome["clause_id"]),
+            "recoverable_band": band,
+            "bulletin_digest": str(outcome["bulletin_digest"]),
+            "cms_digest": str(outcome["cms_digest"]),
+            "evidence_sha256": case.evidence_sha256,
+        }
+        ruling_digest = _digest(json.dumps(ruling_fields, sort_keys=True))
+
+        stamped_fields = dict(ruling_fields)
+        stamped_fields["panel_round"] = round_number
+        digest_payload = json.dumps(stamped_fields, sort_keys=True)
 
         # Read the outgoing verdict into plain locals FIRST. `previous` is a view onto the
         # same storage slot the write below replaces, so reading it afterwards would read
@@ -1161,6 +1482,7 @@ the decision."""
             digest=_digest(digest_payload),
             adjudicated_at=stamp,
             panel_round=u256(round_number),
+            ruling_digest=ruling_digest,
         )
 
         if not had_verdict:
@@ -1188,12 +1510,19 @@ the decision."""
                 self.ground_counts[prior_ground] = u256(prior - 1 if prior > 0 else 0)
                 self.ground_counts[ground] = u256(int(self.ground_counts.get(ground, u256(0))) + 1)
 
-        self._bump_status(case.status, -1)
-        case.status = "VERDICT"
-        self._bump_status("VERDICT", 1)
+        # Where the case lands depends on where it came from. A first panel produces a
+        # verdict and the case is done. A fresh panel hearing an appeal produces a
+        # verdict AND leaves a posted bond that still has to be settled, so the case
+        # moves to REVIEWED and waits for resolve_review. Writing VERDICT here
+        # unconditionally is what used to lock the bond in the contract forever.
+        settled_into = "REVIEWED" if entry_status == "UNDER_REVIEW" else "VERDICT"
+        self._bump_status(entry_status, -1)
+        case.status = settled_into
+        self._bump_status(settled_into, 1)
 
         return {
             "docket": docket,
+            "status": settled_into,
             "overturn_recommended": overturn,
             "ground": ground,
             "clause_id": str(outcome["clause_id"]),
@@ -1203,6 +1532,7 @@ the decision."""
             "confidence": confidence,
             "crosses_confidence_band": confidence >= int(self.min_confidence),
             "digest": _digest(digest_payload),
+            "ruling_digest": ruling_digest,
             "panel_round": round_number,
             "adjudicated_at": stamp,
         }
@@ -1224,10 +1554,22 @@ the decision."""
         verdict = self.verdicts.get(docket)
         if verdict is None:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} '{docket}' has no verdict to review")
-        if case.status == "UNDER_REVIEW":
+        entry_status = str(case.status)
+        if entry_status == "UNDER_REVIEW":
             raise gl.vm.UserError(f"{ERROR_EXPECTED} '{docket}' is already under review")
-        if case.status in ("SETTLED", "REJECTED"):
+        if entry_status == "REVIEWED":
+            raise gl.vm.UserError(
+                f"{ERROR_EXPECTED} the last review of '{docket}' has not been resolved yet, "
+                "so its bond is still held"
+            )
+        if entry_status in ("SETTLED", "REJECTED"):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} '{docket}' is closed")
+        # Belt and braces. Nothing should reach here holding a bond, and if anything
+        # ever does, taking a second one would strand the first.
+        if int(case.review_bond_atto) > 0:
+            raise gl.vm.UserError(
+                f"{ERROR_EXPECTED} a bond is still outstanding on '{docket}'"
+            )
 
         posted = int(gl.message.value)
         required = int(self.review_bond_atto)
@@ -1237,11 +1579,15 @@ the decision."""
             )
 
         requester = str(gl.message.sender_address)
-        self._bump_status(case.status, -1)
+        self._bump_status(entry_status, -1)
         case.status = "UNDER_REVIEW"
         case.panel_round = u256(int(case.panel_round) + 1)
         case.review_bond_atto = u256(posted)
         case.review_requester = requester
+        # Pinned now, read back when the review resolves. This is what makes "did the
+        # second panel actually change anything" a question the contract can answer by
+        # itself.
+        case.pre_review_ruling = str(verdict.ruling_digest)
         self._bump_status("UNDER_REVIEW", 1)
         self.review_count = u256(int(self.review_count) + 1)
         self.bond_held_atto = u256(int(self.bond_held_atto) + posted)
@@ -1254,37 +1600,87 @@ the decision."""
             "prior_digest": verdict.digest,
         }
 
-    @gl.public.write
-    def resolve_review(self, docket: str, verdict_changed: bool) -> dict:
-        """Close a review and award the bond.
+    def _release_bond(self, case: Case, to_requester: bool) -> int:
+        """Let go of a held bond. Either it goes back to the challenger or it stays here.
 
-        If the second panel moved the verdict, the challenger was right and the bond comes
-        back to them. If it did not, the bond stays with the court and funds the next
-        member who cannot afford to post one.
+        One place does this, because every path that closes a case has to do it and a
+        path that forgets leaves real money sitting in the contract with nobody able to
+        ask for it.
         """
-        self._assert_owner()
-        case = self._case_or_raise(docket)
-        if case.status != "UNDER_REVIEW":
-            raise gl.vm.UserError(f"{ERROR_EXPECTED} '{docket}' is not under review")
-
         bond = int(case.review_bond_atto)
-        requester = case.review_requester
-        if verdict_changed and bond > 0 and requester != "":
+        requester = str(case.review_requester)
+        if bond <= 0:
+            return 0
+        if to_requester and requester != "":
             current = int(self.bond_claimable.get(requester, u256(0)))
             self.bond_claimable[requester] = u256(current + bond)
-
         held = int(self.bond_held_atto) - bond
         self.bond_held_atto = u256(held if held > 0 else 0)
         case.review_bond_atto = u256(0)
-        self._bump_status("UNDER_REVIEW", -1)
+        case.review_requester = ""
+        case.pre_review_ruling = ""
+        return bond
+
+    @gl.public.write
+    def resolve_review(self, docket: str) -> dict:
+        """Close a review and award the bond.
+
+        Who wins is not a judgement call and it is not the owner's to make. The digest
+        the verdict carried when the review opened was pinned at that moment; if the
+        fresh panel reached a different one, the challenger was right and the bond comes
+        back to them. If the second panel landed in the same place, the bond stays with
+        the court and funds the next member who cannot afford to post one.
+
+        Two states can be resolved, and the difference matters:
+
+        REVIEWED, the normal path. The fresh panel has ruled. Anyone may close it,
+        because the outcome is read off chain state and there is nothing to game. That
+        is deliberate: if only an administrator could close a review, an administrator
+        who never got round to it would strand somebody else's money indefinitely.
+
+        UNDER_REVIEW, the escape hatch. The panel never sat, usually because the source
+        document has gone and adjudicate cannot succeed. Nobody has been shown to be
+        wrong, so the bond goes back in full. Only the challenger or the owner may do
+        this, so that a passer by cannot cancel a live appeal out from under the person
+        who paid for it.
+        """
+        case = self._case_or_raise(docket)
+        entry_status = str(case.status)
+        if entry_status not in REVIEW_STATUSES:
+            raise gl.vm.UserError(
+                f"{ERROR_EXPECTED} '{docket}' is {entry_status} and has no open review"
+            )
+
+        caller = str(gl.message.sender_address)
+        requester = str(case.review_requester)
+        heard = entry_status == "REVIEWED"
+
+        if not heard and caller != str(self.owner) and caller != requester:
+            raise gl.vm.UserError(
+                f"{ERROR_EXPECTED} only the challenger or the court may abandon a review "
+                "the panel has not heard yet"
+            )
+
+        if heard:
+            verdict = self.verdicts.get(docket)
+            current_ruling = str(verdict.ruling_digest) if verdict is not None else ""
+            changed = current_ruling != str(case.pre_review_ruling)
+        else:
+            # Never heard, so nobody was shown to be wrong. The bond goes home.
+            changed = True
+
+        bond = self._release_bond(case, changed)
+        self._bump_status(entry_status, -1)
         case.status = "VERDICT"
         self._bump_status("VERDICT", 1)
 
         return {
             "docket": docket,
-            "bond_returned": bool(verdict_changed),
+            "heard": heard,
+            "verdict_changed": bool(changed),
+            "bond_returned": bool(changed),
             "bond_atto": str(bond),
-            "awarded_to": requester if verdict_changed else str(self.owner),
+            "awarded_to": requester if changed else str(self.owner),
         }
 
     @gl.public.write
@@ -1304,13 +1700,20 @@ the decision."""
         if str(gl.message.sender_address) != str(self.pool):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} only the advance pool may record an advance")
         case = self._case_or_raise(docket)
+        entry_status = str(case.status)
         amount = int(advanced_atto)
         if amount <= 0:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} the advance must be above zero")
         if int(case.advanced_atto) > 0:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} '{docket}' has already been advanced against")
+        if entry_status in REVIEW_STATUSES:
+            # is_advanceable already says no, and the pool asks first. This is the second
+            # lock, so the gate cannot be skipped by calling straight through.
+            raise gl.vm.UserError(
+                f"{ERROR_EXPECTED} '{docket}' has an open review and cannot be advanced against"
+            )
         case.advanced_atto = u256(amount)
-        self._bump_status(case.status, -1)
+        self._bump_status(entry_status, -1)
         case.status = "ADVANCED"
         self._bump_status("ADVANCED", 1)
 
@@ -1321,12 +1724,16 @@ the decision."""
         if caller != str(self.owner) and caller != str(self.pool):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} only the court or the pool may settle a case")
         case = self._case_or_raise(docket)
-        if case.status in ("SETTLED", "REJECTED"):
+        entry_status = str(case.status)
+        if entry_status in ("SETTLED", "REJECTED"):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} '{docket}' is already closed")
         amount = int(settled_atto)
         if amount < 0:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} a settled amount cannot be negative")
-        self._bump_status(case.status, -1)
+        # The insurer paying settles the argument the review was about, so an open bond
+        # goes back to whoever posted it rather than dying with the case.
+        self._release_bond(case, True)
+        self._bump_status(entry_status, -1)
         case.settled_atto = u256(amount)
         case.status = "SETTLED"
         self._bump_status("SETTLED", 1)
@@ -1336,11 +1743,15 @@ the decision."""
         """Close a case that should never have been filed."""
         self._assert_owner()
         case = self._case_or_raise(docket)
-        if case.status in ("SETTLED", "REJECTED"):
+        entry_status = str(case.status)
+        if entry_status in ("SETTLED", "REJECTED"):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} '{docket}' is already closed")
         if reason.strip() == "":
             raise gl.vm.UserError(f"{ERROR_EXPECTED} a rejection needs a stated reason")
-        self._bump_status(case.status, -1)
+        # A case that should never have been filed cannot also keep the bond somebody
+        # posted to argue about it.
+        self._release_bond(case, True)
+        self._bump_status(entry_status, -1)
         case.status = "REJECTED"
         self._bump_status("REJECTED", 1)
 

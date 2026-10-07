@@ -143,6 +143,32 @@ def verdict_json(
     )
 
 
+def support_json(*, supported: bool = True, problem: str = "") -> str:
+    """The validator's faithfulness check answer.
+
+    Adjudication now costs two model calls on a validator and one on the leader. The
+    leader decides. A validator decides again AND reads the leader's rationale back
+    against the bulletin it fetched itself, because the leader's prose is what gets
+    written to state and nothing else in the pipeline ever looks at it.
+    """
+    return json.dumps({"supported": supported, "problem": problem})
+
+
+def leader_payload(direct_vm) -> dict:
+    """The exact payload the leader handed back on the last adjudication.
+
+    This is the thing the contract writes to state, so it is the thing a validator has
+    to be able to reject. Lifting it out lets a test play a byzantine leader: take the
+    honest payload, change one field, hand it to the validator and watch what happens.
+    A real leader runs the honest code and cannot produce most of these, which is
+    exactly why the validator cannot assume it did.
+    """
+    captured = getattr(direct_vm, "_captured_validators", None)
+    if not captured:
+        raise AssertionError("no validator captured, call adjudicate first")
+    return dict(captured[-1][0])
+
+
 @pytest.fixture
 def registry(direct_deploy, direct_vm, direct_owner):
     direct_vm.sender = direct_owner
