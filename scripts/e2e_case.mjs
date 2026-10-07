@@ -71,7 +71,14 @@ console.log(`   docket ${docket}, ${stats.case_count} case(s) on the docket`);
 console.log('\n2. adjudicating. Every validator now re-fetches both sources and reruns the job.');
 console.log('   This takes a while on purpose.');
 const started = Date.now();
-await send(client, court, 'adjudicate', [docket], 'adjudicate');
+// Rotations matter here and nowhere else in this script. Every validator makes two model
+// calls on an adjudication, so an occasional split panel is normal, and rotating the panel
+// is the protocol's designed response to one. Without this a single disagreement ends the
+// transaction with nothing written.
+await send(client, court, 'adjudicate', [docket], 'adjudicate', 0n, {
+  consensusMaxRotations: 5,
+  waitRetries: 400,
+});
 console.log(`   consensus reached in ${Math.round((Date.now() - started) / 1000)}s`);
 
 console.log('\n3. the verdict, read back off the contract');
