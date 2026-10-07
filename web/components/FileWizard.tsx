@@ -7,12 +7,12 @@ import {
   ArrowRight,
   Check,
   Gavel,
-  Loader2,
   ScanSearch,
   ShieldCheck,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 
+import { ConsensusPip, ConsensusProgress } from '@/components/ConsensusProgress';
 import { Code, FullRule, Panel, RailNote } from '@/components/ui/primitives';
 import { useApi } from '@/lib/useApi';
 
@@ -219,11 +219,7 @@ export function FileWizard({
                   className="inline-flex h-10 items-center gap-2 border border-signal bg-signal px-4 text-14 font-medium text-white transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
                   style={{ borderRadius: 'var(--radius-hair)' }}
                 >
-                  {busy ? (
-                    <Loader2 size={15} className="animate-spin" aria-hidden="true" />
-                  ) : (
-                    <ScanSearch size={15} aria-hidden="true" />
-                  )}
+                  {busy ? <ConsensusPip size={15} /> : <ScanSearch size={15} aria-hidden="true" />}
                   Scan it
                 </button>
               </div>
@@ -567,14 +563,14 @@ export function FileWizard({
                   className="inline-flex h-11 items-center gap-2 border border-signal bg-signal px-5 text-16 font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
                   style={{ borderRadius: 'var(--radius-hair)' }}
                 >
-                  {busy ? (
-                    <Loader2 size={16} className="animate-spin" aria-hidden="true" />
-                  ) : (
-                    <Gavel size={16} aria-hidden="true" />
-                  )}
+                  {busy ? <ConsensusPip /> : <Gavel size={16} aria-hidden="true" />}
                   {busy ? 'Opening the case' : 'Open the case'}
                 </button>
               </div>
+
+              {busy && (
+                <ConsensusProgress job="The filing is being checked against the plan rule on chain and written to the court." />
+              )}
             </div>
           )}
 

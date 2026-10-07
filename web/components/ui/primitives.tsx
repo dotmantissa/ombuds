@@ -76,6 +76,7 @@ const CHIP_TONE: Record<string, { fg: string; bd: string }> = {
   FILED: { fg: 'var(--wait)', bd: 'var(--wait)' },
   ADJUDICATING: { fg: 'var(--wait)', bd: 'var(--wait)' },
   UNDER_REVIEW: { fg: 'var(--wait)', bd: 'var(--wait)' },
+  REVIEWED: { fg: 'var(--wait)', bd: 'var(--wait)' },
   REJECTED: { fg: 'var(--loss)', bd: 'var(--loss)' },
 };
 

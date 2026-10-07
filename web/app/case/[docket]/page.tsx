@@ -190,6 +190,7 @@ export default async function CasePage({ params }: { params: Promise<{ docket: s
                 advanceReason={gate?.reason ?? ''}
                 quoteAmountAtto={quote?.eligible === true ? quote.amount_atto : null}
                 quoteLimitedBy={quote?.limited_by ?? null}
+                panelRound={Number(kase.panel_round ?? 1)}
               />
             </>
           )}
@@ -203,6 +204,7 @@ export default async function CasePage({ params }: { params: Promise<{ docket: s
               advanceReason=""
               quoteAmountAtto={null}
               quoteLimitedBy={null}
+              panelRound={Number(kase.panel_round ?? 1)}
             />
           )}
 

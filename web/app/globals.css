@@ -363,6 +363,49 @@
   }
 }
 
+/* ---------------------------------------------------------------------------
+   Consensus motion.
+   The one exception to "no ambient motion". A panel sitting on a case for two
+   or three minutes has to show it is alive, and the thing it should show is
+   what GenLayer is actually doing: a round travelling across a panel of
+   validators that are each re-running the job on their own.
+
+   Both are neutralised by the reduced motion block at the foot of this file,
+   and the component stays readable without them because the stage ladder and
+   the elapsed clock carry the same information in text.
+   --------------------------------------------------------------------------- */
+
+/* A validator waking as the round reaches it. Staggered per node by --i. */
+@keyframes node-wake {
+  0%,
+  100% {
+    opacity: 0.28;
+    border-color: var(--line-strong);
+  }
+  45% {
+    opacity: 1;
+    border-color: var(--signal);
+  }
+}
+
+/* The round itself, crossing the panel left to right along the tie line. */
+@keyframes round-travel {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+/* The mark, turning slowly. Used in place of a generic spinner so a pending
+   action still looks like this product rather than any other. */
+@keyframes seal-turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* Evidence rows stamp in. Used for evidence rows only, nothing else. */
 @keyframes stamp-in {
   from {
@@ -373,6 +416,58 @@
     opacity: 1;
     transform: scale(1);
   }
+}
+
+/* ---------------------------------------------------------------------------
+   The consensus panel.
+   A leader and the validators behind it, with the round crossing them. Squares
+   on a hairline, same geometry as everything else, no shadows.
+   --------------------------------------------------------------------------- */
+
+.consensus-node {
+  position: relative;
+  z-index: 1;
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r);
+  background: var(--surface);
+  opacity: 0.28;
+  animation: node-wake 2.2s ease-in-out infinite;
+  animation-delay: calc(var(--i, 0) * 180ms);
+}
+
+/* The leader is filled. It proposes, so it is the one that is always lit. */
+.consensus-node.is-leader {
+  border-color: var(--signal);
+  background: var(--signal);
+  opacity: 1;
+  animation: none;
+}
+
+/* The tie line the round travels along, behind the nodes. */
+.consensus-tie {
+  position: absolute;
+  z-index: 0;
+  inset-inline: 0;
+  top: 50%;
+  height: 1px;
+  overflow: hidden;
+  background: var(--line);
+}
+
+.consensus-tie::after {
+  content: "";
+  position: absolute;
+  inset-block: 0;
+  width: 42%;
+  background: linear-gradient(90deg, transparent, var(--signal), transparent);
+  animation: round-travel 2.2s linear infinite;
+}
+
+.consensus-turn {
+  animation: seal-turn 2.8s linear infinite;
 }
 
 /* ---------------------------------------------------------------------------
@@ -557,6 +652,19 @@
    nothing. Kept last so it beats everything above it.
    --------------------------------------------------------------------------- */
 @media (prefers-reduced-motion: reduce) {
+  /* The consensus panel is dimmed by its animation's own first frame, so with
+     the animation killed it would sit there looking switched off. Bring the
+     nodes up to full and hide the travelling round instead. The stage ladder
+     and the elapsed clock already carry the same information in text. */
+  .consensus-node {
+    opacity: 1 !important;
+    border-color: var(--signal) !important;
+  }
+
+  .consensus-tie::after {
+    display: none !important;
+  }
+
   *,
   *::before,
   *::after {

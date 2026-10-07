@@ -1,8 +1,9 @@
 'use client';
 
 import { usePrivy } from '@privy-io/react-auth';
-import { LogIn, LogOut, Loader2 } from 'lucide-react';
+import { LogIn, LogOut } from 'lucide-react';
 
+import { ConsensusPip } from '@/components/ConsensusProgress';
 import { publicEnv } from '@/lib/env';
 
 export function SignInButton() {
@@ -20,7 +21,7 @@ export function SignInButton() {
   if (!privy.ready) {
     return (
       <span className="grid h-9 w-9 place-items-center text-text-3">
-        <Loader2 size={15} className="animate-spin" aria-hidden="true" />
+        <ConsensusPip size={15} />
         <span className="sr-only">Loading your session</span>
       </span>
     );

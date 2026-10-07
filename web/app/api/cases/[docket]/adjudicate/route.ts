@@ -1,16 +1,44 @@
 import { recordVerdict, updateCaseStatus } from '@/lib/db';
 import {
+  type ChainAddress,
   ombudsCourtAddress,
   readContract,
   ReceiptTimeoutError,
   writeContract,
 } from '@/lib/genlayer';
 import { authErrorResponse, requireMember } from '@/lib/privy';
+import { isCaseStatus } from '@/types/ombuds';
 
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
 
 const DOCKET = /^OMB-\d{4}-\d{6}$/;
+
+/**
+ * Mirror the status the contract actually reports.
+ *
+ * Adjudication does not have one landing state any more. A first reading ends at VERDICT,
+ * but a re-reading of a case with a bond outstanding ends at REVIEWED, and the difference
+ * is the whole of what makes the appeal settleable. Asserting either one from here would
+ * be the index inventing a fact, so it is read back instead. A status this build does not
+ * recognise is a reason to leave the index alone rather than write a guess into it.
+ */
+async function mirrorChainStatus(court: ChainAddress, docket: string, txHash?: string) {
+  try {
+    const kase = await readContract<{ status: string }>({
+      address: court,
+      functionName: 'get_case',
+      args: [docket],
+    });
+    const onChain = String(kase.status);
+    if (isCaseStatus(onChain)) {
+      await updateCaseStatus(docket, onChain, txHash);
+    }
+  } catch {
+    // The index is not the record. Failing to refresh it is not worth failing the
+    // request the member actually made.
+  }
+}
 
 /**
  * Send a case to the panel.
@@ -59,12 +87,12 @@ export async function POST(req: Request, context: { params: Promise<{ docket: st
         { status: 202 },
       );
     }
-    await updateCaseStatus(docket, 'FILED').catch(() => undefined);
+    await mirrorChainStatus(court, docket);
     throw err;
   }
 
   if (!write.ok) {
-    await updateCaseStatus(docket, 'FILED').catch(() => undefined);
+    await mirrorChainStatus(court, docket);
     return Response.json(
       {
         error: write.error ?? 'The panel could not reach a verdict on that case.',
@@ -108,7 +136,7 @@ export async function POST(req: Request, context: { params: Promise<{ docket: st
     panelRound: Number(verdict.panel_round ?? 1),
   }).catch(() => undefined);
 
-  await updateCaseStatus(docket, 'VERDICT', write.txHash).catch(() => undefined);
+  await mirrorChainStatus(court, docket, write.txHash);
 
   return Response.json({ docket, txHash: write.txHash, status: write.status, verdict });
 }

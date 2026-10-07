@@ -68,9 +68,14 @@ export function isGround(value: string): value is Ground {
 /**
  * Where a case sits in its life. FILED and ADJUDICATING are chain states,
  * VERDICT means a verdict object exists, ADVANCED means the pool has paid the
- * member, UNDER_REVIEW means somebody posted a bond and a fresh panel is
- * looking at it again, SETTLED means the insurer paid, REJECTED means the case
- * never got off the ground, usually a lapsed plan rule.
+ * member, SETTLED means the insurer paid, REJECTED means the case never got off
+ * the ground, usually a lapsed plan rule.
+ *
+ * The appeal path is two states, not one, and the difference is load bearing.
+ * UNDER_REVIEW means somebody posted a bond and the fresh panel has not sat yet.
+ * REVIEWED means it has sat and ruled, and the bond has still to be settled.
+ * Collapsing the two is what used to leave the bond stuck in the contract with
+ * nobody able to ask for it back.
  */
 export type CaseStatus =
   | 'FILED'
@@ -78,6 +83,7 @@ export type CaseStatus =
   | 'VERDICT'
   | 'ADVANCED'
   | 'UNDER_REVIEW'
+  | 'REVIEWED'
   | 'SETTLED'
   | 'REJECTED';
 
@@ -87,6 +93,7 @@ export const CASE_STATUSES: readonly CaseStatus[] = [
   'VERDICT',
   'ADVANCED',
   'UNDER_REVIEW',
+  'REVIEWED',
   'SETTLED',
   'REJECTED',
 ] as const;
@@ -98,9 +105,17 @@ export const CASE_STATUS_LABELS: Readonly<Record<CaseStatus, string>> = {
   VERDICT: 'Verdict in',
   ADVANCED: 'Advanced',
   UNDER_REVIEW: 'Under review',
+  REVIEWED: 'Appeal heard',
   SETTLED: 'Settled',
   REJECTED: 'Rejected',
 } as const;
+
+/** A bond is posted and still held in exactly these two states. */
+export const REVIEW_OPEN_STATUSES: readonly CaseStatus[] = ['UNDER_REVIEW', 'REVIEWED'] as const;
+
+export function isReviewOpen(value: string): boolean {
+  return (REVIEW_OPEN_STATUSES as readonly string[]).includes(value);
+}
 
 export function isCaseStatus(value: string): value is CaseStatus {
   return (CASE_STATUSES as readonly string[]).includes(value);
