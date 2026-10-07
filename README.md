@@ -48,8 +48,8 @@ GenLayer studio network, chain id 61999.
 | Contract | Address | What it holds |
 |---|---|---|
 | `PlanRegistry` | [`0x0905d1C488c626A1016Cd219E69141a141Cc0bD2`](https://genlayer-explorer.vercel.app) | Published coverage rules, their effective windows, and a digest of each one's policy text |
-| `OmbudsCourt` | [`0xeD1d80EFba9B2354feA56bD9a4aE83049dc85e8F`](https://genlayer-explorer.vercel.app) | Cases, verdicts, the appeal path and the de-identification tripwire |
-| `AdvancePool` | [`0x6b59986464D2D82F8fE67Bc17383d2f21579CDC2`](https://genlayer-explorer.vercel.app) | Underwriter capital, advances to members, recoveries and write offs |
+| `OmbudsCourt` | [`0x2659c0cf1E651be0D3413f7a0647b169ceAdAb92`](https://genlayer-explorer.vercel.app) | Cases, verdicts, the appeal path and the de-identification tripwire |
+| `AdvancePool` | [`0xc5Ef4A8eC731512B38A43209113325d0d6841C5f`](https://genlayer-explorer.vercel.app) | Underwriter capital, advances to members, recoveries and write offs |
 
 All five registered plan rules carry a consensus digest that every validator independently
 agreed on after re-fetching the live bulletin.
@@ -96,19 +96,21 @@ agreed on after re-fetching the live bulletin.
 ### A real run
 
 ```
-docket OMB-2026-000003
-consensus reached in 78s
+docket OMB-2026-000002
+consensus reached in 35s
 
 overturn_recommended  true
 ground                MEDICAL_NECESSITY
 clause_id             0157#medically-necessary
+clause_section        Medically Necessary
 recoverable_band      3 ($7,500 to $25,000)
-confidence            82, clears the money line
+confidence            100, clears the money line
 citations             3
 
 quoted clause, verbatim from Aetna CPB 0157:
-"Open or laparoscopic short or long-limb Roux-en-Y gastric bypass (RYGB), open or
- laparoscopic sleeve gastrectomy ..."
+"Body mass index (BMI) (see Appendix ) greater than or equal to 40 kg/m 2 (or greater
+ than or equal to 37.5 kg/m 2 for persons of Asian ancestry) measured prior to
+ preoperative preparatory program ..."
 
 pool advanced 2 GEN, limited by the ceiling on this payout band
 case status ADVANCED
@@ -187,7 +189,7 @@ cp .env.example .env     # then fill it in
 
 ```bash
 npm run lint:contracts   # genvm-lint, all three contracts
-npm run test:contracts   # 168 direct mode tests
+npm run test:contracts   # 189 direct mode tests
 npm run deploy:contracts # studio network
 npm run seed:registry    # register the verified rules, then refresh each digest
 npm run dev              # the app on :3000
@@ -210,7 +212,7 @@ contracts/
   ombuds_court.py     the adjudicator, the validator comparison rule and the appeal path.
   advance_pool.py     underwriter capital, advances, recoveries and write offs.
 tests/
-  direct/             168 tests, run against genuine captured source documents.
+  direct/             189 tests, run against genuine captured source documents.
   fixtures/           real Aetna bulletin pages and CMS payloads, byte for byte.
 web/data/sources.json every source, with the status it answered with when checked.
 deploy/               deployment, registry seeding, pool funding.
@@ -222,7 +224,7 @@ web/                  Next.js 15 App Router, the API routes and the pages.
 
 ## The tests
 
-168 direct mode tests across the three contracts, run against the real Aetna bulletin pages
+189 direct mode tests across the three contracts, run against the real Aetna bulletin pages
 and CMS payloads captured in `tests/fixtures`. A hand written stub would quietly prove
 nothing, because the contracts slice policy text by looking for real section headings.
 
@@ -232,6 +234,17 @@ ground, cites a different clause, lands in a different payout band, crosses the 
 line, or turns out to have read a document that had been edited. And they check the one case
 where disagreement would be wrong: when both sides independently hit the same transient
 failure, they agree the source was down, because a dead government API is not a disagreement.
+
+A second set drives the same function against a leader that is lying rather than one that is
+merely mistaken. The honest path cannot produce a forged citation, because the step that
+decides the case verifies its own quote before returning it, so a dishonest leader has to be
+injected deliberately: the harness hands the validator an arbitrary payload and asks whether it
+votes for it. Those tests commit a quote that appears nowhere in the bulletin, a quote too
+short to identify anything, a rewritten rationale, a rationale carrying a patient identifier,
+a bulletin digest the validator did not compute, a coverage digest it did not compute, a
+section the registry never declared, and a confidence figure nowhere near its own. All nine
+fail against the previous version of the contract, which is what makes them proof rather than
+description.
 
 Direct mode runs one contract per VM, so cross contract calls are served through the
 documented `gl_call` hook. The genuine three contract wiring is exercised against the studio

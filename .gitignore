@@ -44,5 +44,6 @@ Thumbs.db
 # local task state (crash recovery, intentionally untracked)
 .task-checklist.md
 .agent-notes/
+deploy/.redeploy-state.json
 *.log
 npm-debug.log*
