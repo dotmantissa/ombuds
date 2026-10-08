@@ -3,7 +3,7 @@
   "chainId": 61999,
   "rpcUrl": "https://studio.genlayer.com/api",
   "deployer": "0xBC1399c55538eC034d4Da550C03c34Ae0C357f53",
-  "deployedAt": "2026-10-07T03:13:15.764Z",
+  "deployedAt": "2026-10-08T10:26:01.154Z",
   "note": "PlanRegistry is the original deployment and was deliberately kept: its code did not change this round and its rules carry consensus digests. OmbudsCourt and AdvancePool were redeployed because the court storage layout changed.",
   "terms": {
     "minConfidence": 70,
@@ -26,12 +26,12 @@
       "txHash": "0x8b640ea74dcaeaf6c18e895afad451a89eeb298620723f6f9db1356475c4c62f"
     },
     "OmbudsCourt": {
-      "address": "0x2659c0cf1E651be0D3413f7a0647b169ceAdAb92",
-      "txHash": "0x22f895c1c45be7e5d2a4f4cf949aabac4641658f871c4ac964e0c5e0a9c0c3d8"
+      "address": "0x8869D8bA6b54A00bd3EA161DF7F4C59e7164032F",
+      "txHash": "0x6a1407b5a30e77792bbb1ef756e8def499ebd2ed419f011858e62d81ae751695"
     },
     "AdvancePool": {
-      "address": "0xc5Ef4A8eC731512B38A43209113325d0d6841C5f",
-      "txHash": "0xcfbc4288f9629c62caf84c5f54d8ec6b47afca9d94896d7d9bb4283fa5906060"
+      "address": "0x2d51263802D8805F7d692f1B105Bf5965dCc4840",
+      "txHash": "0xa3441b91e3299ef3ed1883b66886d27ec4b3b36419bca5313d389a0f46a37427"
     }
   }
 }

@@ -260,6 +260,18 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _require_address(label: str, value) -> str:
+    cleaned = str(value).strip().lower() if value is not None else ""
+    if not cleaned.startswith("0x") or len(cleaned) != 42:
+        raise gl.vm.UserError(f"{ERROR_EXPECTED} {label} must be a 0x prefixed 20 byte address")
+    try:
+        int(cleaned[2:], 16)
+    except ValueError:
+        raise gl.vm.UserError(f"{ERROR_EXPECTED} {label} must be a 0x prefixed 20 byte address")
+    return cleaned
+
+
+
 def _chain_stamp() -> str:
     """The transaction datetime the chain supplied. Same for every validator."""
     raw = str(gl.message_raw.get("datetime", ""))
@@ -1191,6 +1203,7 @@ class OmbudsCourt(gl.Contract):
         service_month: str,
         disputed_atto: str,
         evidence_sha256: str,
+        filer_address: str = "",
     ) -> str:
         """Open a case. Refuses anything patient shaped, and anything against a lapsed rule."""
         if _MONTH_RE.match(service_month) is None:
@@ -1251,7 +1264,12 @@ class OmbudsCourt(gl.Contract):
 
         docket = self._next_docket()
         stamp = _chain_stamp()
-        filer = gl.message.sender_address
+        filer_str = str(filer_address).strip() if filer_address is not None else ""
+        if filer_str != "":
+            cleaned_filer = _require_address("filer_address", filer_str)
+            filer = Address(cleaned_filer)
+        else:
+            filer = gl.message.sender_address
 
         self.cases[docket] = Case(
             docket=docket,
@@ -1686,12 +1704,18 @@ class OmbudsCourt(gl.Contract):
     @gl.public.write
     def withdraw_bond(self) -> str:
         """Take back a bond that was awarded to you."""
-        caller = str(gl.message.sender_address)
-        owed = int(self.bond_claimable.get(caller, u256(0)))
+        return self.withdraw_bond_for(str(gl.message.sender_address))
+
+    @gl.public.write
+    def withdraw_bond_for(self, requester: str) -> str:
+        """Take back a bond that was awarded to a requester, relayed directly to them."""
+        _require_address("requester", requester)
+        target = requester.strip()
+        owed = int(self.bond_claimable.get(target, u256(0)))
         if owed <= 0:
-            raise gl.vm.UserError(f"{ERROR_EXPECTED} nothing is owed to {caller}")
-        self.bond_claimable[caller] = u256(0)
-        gl.get_contract_at(gl.message.sender_address).emit_transfer(value=u256(owed), on="finalized")
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} nothing is owed to {target}")
+        self.bond_claimable[target] = u256(0)
+        gl.get_contract_at(Address(target)).emit_transfer(value=u256(owed), on="finalized")
         return str(owed)
 
     @gl.public.write
@@ -1727,6 +1751,16 @@ class OmbudsCourt(gl.Contract):
         entry_status = str(case.status)
         if entry_status in ("SETTLED", "REJECTED"):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} '{docket}' is already closed")
+        if entry_status == "FILED":
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} '{docket}' has not been adjudicated")
+        if entry_status == "ADVANCED" and caller != str(self.pool):
+            raise gl.vm.UserError(
+                f"{ERROR_EXPECTED} only the advance pool may settle an advanced case"
+            )
+        if caller == str(self.pool) and entry_status != "ADVANCED":
+            raise gl.vm.UserError(
+                f"{ERROR_EXPECTED} only an advanced case can be settled by the advance pool"
+            )
         amount = int(settled_atto)
         if amount < 0:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} a settled amount cannot be negative")
@@ -1758,9 +1792,8 @@ class OmbudsCourt(gl.Contract):
     @gl.public.write
     def set_pool(self, pool_address: str) -> None:
         self._assert_owner()
-        if not pool_address.startswith("0x") or len(pool_address) != 42:
-            raise gl.vm.UserError(f"{ERROR_EXPECTED} pool_address must be a 20 byte address")
-        self.pool = Address(pool_address)
+        cleaned = _require_address("pool_address", pool_address)
+        self.pool = Address(cleaned)
 
     @gl.public.write
     def set_min_confidence(self, min_confidence: int) -> None:
@@ -1778,6 +1811,5 @@ class OmbudsCourt(gl.Contract):
     @gl.public.write
     def set_registry(self, registry_address: str) -> None:
         self._assert_owner()
-        if not registry_address.startswith("0x") or len(registry_address) != 42:
-            raise gl.vm.UserError(f"{ERROR_EXPECTED} registry_address must be a 20 byte address")
-        self.registry = Address(registry_address)
+        cleaned = _require_address("registry_address", registry_address)
+        self.registry = Address(cleaned)

@@ -556,3 +556,103 @@ def test_the_court_address_can_be_repointed(pool, direct_vm, direct_owner):
     fresh = "0x" + "33" * 20
     pool.set_court(fresh)
     assert pool.get_config()["court"].lower() == fresh.lower()
+
+
+def test_advance_pays_member_bound_address(make_pool, direct_vm, direct_alice):
+    member = "0x" + "bb" * 20
+    stub = court_stub(filer=member)
+    pool, _ = make_pool(stub=stub)
+    fund(pool, direct_vm, direct_alice, 100 * ATTO)
+    out = pool.advance(DOCKET)
+    assert out["member"].lower() == member.lower()
+    assert pool.get_advance(DOCKET)["member"].lower() == member.lower()
+
+
+def test_claim_for_transfers_surplus_to_member(make_pool, direct_vm, direct_alice):
+    member = "0x" + "bb" * 20
+    stub = court_stub(filer=member)
+    pool, _ = make_pool(stub=stub)
+    fund(pool, direct_vm, direct_alice, 100 * ATTO)
+    advance = int(pool.advance(DOCKET)["amount_atto"])
+    fee = (advance * 1200) // 10000
+
+    direct_vm.sender = direct_alice
+    direct_vm.value = advance + fee + (3 * ATTO)
+    pool.record_recovery(DOCKET)
+    direct_vm.value = 0
+
+    assert int(pool.claimable_of(member)) == 3 * ATTO
+
+    with direct_vm.expect_revert("must be a 0x prefixed 20 byte address"):
+        pool.claim_for("not-an-address")
+
+    with direct_vm.expect_revert("nothing is claimable"):
+        pool.claim_for("0x" + "cc" * 20)
+
+    claimed = pool.claim_for(member)
+    assert int(claimed) == 3 * ATTO
+    assert int(pool.claimable_of(member)) == 0
+
+
+def test_record_recovery_refuses_unauthorised_stranger(make_pool, direct_vm, direct_alice):
+    member = "0x" + "bb" * 20
+    stub = court_stub(filer=member)
+    pool, _ = make_pool(stub=stub)
+    fund(pool, direct_vm, direct_alice, 100 * ATTO)
+    advance = int(pool.advance(DOCKET)["amount_atto"])
+
+    stranger = "0x" + "99" * 20
+    direct_vm.sender = stranger
+    direct_vm.value = advance
+    with direct_vm.expect_revert("caller is not authorised to record recovery"):
+        pool.record_recovery(DOCKET)
+    direct_vm.value = 0
+
+
+def test_withdrawn_principal_fee_allocation(pool, direct_vm, direct_alice, direct_bob):
+    fund(pool, direct_vm, direct_alice, 100 * ATTO)
+    fund(pool, direct_vm, direct_bob, 100 * ATTO)
+
+    direct_vm.sender = direct_bob
+    pool.withdraw(str(50 * ATTO))
+
+    pos_bob = pool.position_of(str(direct_bob))
+    assert int(pos_bob["active_principal_atto"]) == 50 * ATTO
+    pos_alice = pool.position_of(str(direct_alice))
+    assert int(pos_alice["active_principal_atto"]) == 100 * ATTO
+
+    advance = int(pool.advance(DOCKET)["amount_atto"])
+    fee = (advance * 1200) // 10000
+
+    direct_vm.sender = direct_alice
+    direct_vm.value = advance + fee
+    pool.record_recovery(DOCKET)
+    direct_vm.value = 0
+
+    alice_cut = int(pool.position_of(str(direct_alice))["fees_earned_atto"])
+    bob_cut = int(pool.position_of(str(direct_bob))["fees_earned_atto"])
+    assert alice_cut == (fee * 100) // 150
+    assert bob_cut == (fee * 50) // 150
+
+
+def test_full_withdrawal_receives_zero_fee_allocation(pool, direct_vm, direct_alice, direct_bob):
+    fund(pool, direct_vm, direct_alice, 100 * ATTO)
+    fund(pool, direct_vm, direct_bob, 50 * ATTO)
+
+    direct_vm.sender = direct_bob
+    pool.withdraw(str(50 * ATTO))
+
+    assert int(pool.position_of(str(direct_bob))["active_principal_atto"]) == 0
+
+    advance = int(pool.advance(DOCKET)["amount_atto"])
+    fee = (advance * 1200) // 10000
+
+    direct_vm.sender = direct_alice
+    direct_vm.value = advance + fee
+    pool.record_recovery(DOCKET)
+    direct_vm.value = 0
+
+    alice_cut = int(pool.position_of(str(direct_alice))["fees_earned_atto"])
+    bob_cut = int(pool.position_of(str(direct_bob))["fees_earned_atto"])
+    assert bob_cut == 0
+    assert alice_cut == fee

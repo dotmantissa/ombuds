@@ -231,7 +231,7 @@ CLEAN_RATIONALE = (
 )
 
 
-def file_clean_case(court, *, disputed_atto=12_000 * ATTO, evidence=None):
+def file_clean_case(court, *, disputed_atto=12_000 * ATTO, evidence=None, filer_address=""):
     return court.file_case(
         "AETNA-COMMERCIAL-BARIATRIC",
         "bariatric_surgery",
@@ -243,6 +243,7 @@ def file_clean_case(court, *, disputed_atto=12_000 * ATTO, evidence=None):
         "2026-04",
         str(disputed_atto),
         evidence or ("a" * 64),
+        filer_address,
     )
 
 # ---------------------------------------------------------------- cross contract stubs

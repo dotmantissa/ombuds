@@ -86,10 +86,15 @@ def _chain_stamp() -> str:
     return raw
 
 
-def _require_address(label: str, value: str) -> str:
-    if not value.startswith("0x") or len(value) != 42:
+def _require_address(label: str, value) -> str:
+    cleaned = str(value).strip().lower() if value is not None else ""
+    if not cleaned.startswith("0x") or len(cleaned) != 42:
         raise gl.vm.UserError(f"{ERROR_EXPECTED} {label} must be a 0x prefixed 20 byte address")
-    return value
+    try:
+        int(cleaned[2:], 16)
+    except ValueError:
+        raise gl.vm.UserError(f"{ERROR_EXPECTED} {label} must be a 0x prefixed 20 byte address")
+    return cleaned
 
 
 def _parse_caps(csv: str) -> list:
@@ -143,7 +148,7 @@ class AdvancePool(gl.Contract):
         max_utilisation_bps: int,
         band_caps_atto: str,
     ) -> None:
-        _require_address("court_address", court_address)
+        cleaned_court = _require_address("court_address", court_address)
         rate = int(advance_rate_bps)
         fee = int(fee_bps)
         utilisation = int(max_utilisation_bps)
@@ -157,7 +162,7 @@ class AdvancePool(gl.Contract):
             )
 
         self.owner = gl.message.sender_address
-        self.court = Address(court_address)
+        self.court = Address(cleaned_court)
         self.advance_rate_bps = u256(rate)
         self.fee_bps = u256(fee)
         self.max_utilisation_bps = u256(utilisation)
@@ -221,6 +226,24 @@ class AdvancePool(gl.Contract):
         headroom = ceiling - int(self.outstanding_atto)
         return headroom if headroom > 0 else 0
 
+    def _active_principal(self, position: Underwriter) -> int:
+        """Remaining active principal taking into account withdrawn principal."""
+        principal = int(position.principal_atto)
+        withdrawn = int(position.withdrawn_atto)
+        fees_earned = int(position.fees_earned_atto)
+        withdrawn_principal = withdrawn - fees_earned if withdrawn > fees_earned else 0
+        active = principal - withdrawn_principal
+        return active if active > 0 else 0
+
+    def _total_active_principal(self) -> int:
+        """Sum of all underwriters' active principal."""
+        total = 0
+        for address in self.underwriter_list:
+            pos = self.underwriters.get(address)
+            if pos is not None:
+                total += self._active_principal(pos)
+        return total
+
     # ----------------------------------------------------------------------------- views
 
     @gl.public.view
@@ -265,6 +288,7 @@ class AdvancePool(gl.Contract):
             return {
                 "address": address,
                 "principal_atto": "0",
+                "active_principal_atto": "0",
                 "withdrawn_atto": "0",
                 "fees_earned_atto": "0",
                 "deposit_count": 0,
@@ -272,22 +296,24 @@ class AdvancePool(gl.Contract):
                 "first_deposit_at": "",
                 "last_deposit_at": "",
             }
-        total = int(self.total_capital_atto)
-        principal = int(record.principal_atto)
+        total_active = self._total_active_principal()
+        active = self._active_principal(record)
         return {
             "address": record.address,
-            "principal_atto": str(principal),
+            "principal_atto": str(int(record.principal_atto)),
+            "active_principal_atto": str(active),
             "withdrawn_atto": str(int(record.withdrawn_atto)),
             "fees_earned_atto": str(int(record.fees_earned_atto)),
             "deposit_count": int(record.deposit_count),
-            "share_bps": (principal * BPS) // total if total > 0 else 0,
+            "share_bps": (active * BPS) // total_active if total_active > 0 else 0,
             "first_deposit_at": record.first_deposit_at,
             "last_deposit_at": record.last_deposit_at,
         }
 
     @gl.public.view
     def claimable_of(self, address: str) -> str:
-        return str(int(self.claimable_atto.get(address, u256(0))))
+        cleaned = _require_address("address", address)
+        return str(int(self.claimable_atto.get(cleaned, u256(0))))
 
     @gl.public.view
     def get_advance(self, docket: str) -> dict:
@@ -495,8 +521,7 @@ class AdvancePool(gl.Contract):
                 f"{ERROR_EXPECTED} {gate.get('reason', 'the court has not cleared this docket')}"
             )
 
-        member = str(gate.get("filer", ""))
-        _require_address("member", member)
+        member = _require_address("member", gate.get("filer", ""))
         disputed = int(gate.get("disputed_atto", "0"))
         band = int(gate.get("band", 0))
         if disputed <= 0:
@@ -563,6 +588,13 @@ class AdvancePool(gl.Contract):
         if record.status != "OUTSTANDING":
             raise gl.vm.UserError(f"{ERROR_EXPECTED} '{docket}' is already {record.status}")
 
+        caller = str(gl.message.sender_address)
+        is_owner = caller == str(self.owner)
+        is_member = caller == str(record.member)
+        is_underwriter = self.underwriters.get(caller) is not None
+        if not (is_owner or is_member or is_underwriter):
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} caller is not authorised to record recovery")
+
         received = int(gl.message.value)
         if received <= 0:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} a recovery must carry value")
@@ -603,14 +635,16 @@ class AdvancePool(gl.Contract):
                 int(self.total_member_share_atto) + member_share
             )
 
-        # Fees accrue to underwriters in proportion to principal, recorded for the UI.
-        total_principal = int(self.total_capital_atto)
-        if fee > 0 and total_principal > 0:
+        # Fees accrue to underwriters in proportion to active principal (taking into account
+        # withdrawn principal), recorded for the UI.
+        total_active_principal = self._total_active_principal()
+        if fee > 0 and total_active_principal > 0:
             for address in self.underwriter_list:
                 position = self.underwriters.get(address)
                 if position is None:
                     continue
-                cut = (fee * int(position.principal_atto)) // total_principal
+                active = self._active_principal(position)
+                cut = (fee * active) // total_active_principal
                 if cut > 0:
                     position.fees_earned_atto = u256(int(position.fees_earned_atto) + cut)
 
@@ -655,17 +689,24 @@ class AdvancePool(gl.Contract):
         }
 
     @gl.public.write
-    def claim(self) -> str:
-        """A member taking the surplus from a recovery that came in above the advance."""
-        address = str(gl.message.sender_address)
-        owed = int(self.claimable_atto.get(address, u256(0)))
+    def claim_for(self, member_address: str) -> str:
+        """A relayed claim: transfers surplus directly to the member."""
+        target = _require_address("member_address", member_address)
+        owed = int(self.claimable_atto.get(target, u256(0)))
         if owed <= 0:
-            raise gl.vm.UserError(f"{ERROR_EXPECTED} nothing is claimable for {address}")
-        self.claimable_atto[address] = u256(0)
-        gl.get_contract_at(gl.message.sender_address).emit_transfer(
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} nothing is claimable for {target}")
+        self.claimable_atto[target] = u256(0)
+        held = int(self.total_member_share_atto) - owed
+        self.total_member_share_atto = u256(held if held > 0 else 0)
+        gl.get_contract_at(Address(target)).emit_transfer(
             value=u256(owed), on="finalized"
         )
         return str(owed)
+
+    @gl.public.write
+    def claim(self) -> str:
+        """A member taking the surplus from a recovery that came in above the advance."""
+        return self.claim_for(str(gl.message.sender_address))
 
     @gl.public.write
     def set_terms(self, advance_rate_bps: int, fee_bps: int, max_utilisation_bps: int) -> None:
@@ -698,5 +739,5 @@ class AdvancePool(gl.Contract):
     @gl.public.write
     def set_court(self, court_address: str) -> None:
         self._assert_owner()
-        _require_address("court_address", court_address)
-        self.court = Address(court_address)
+        cleaned = _require_address("court_address", court_address)
+        self.court = Address(cleaned)

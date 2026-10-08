@@ -1404,3 +1404,99 @@ def test_a_rule_with_no_declared_sections_cannot_be_adjudicated(
 
     with direct_vm.expect_revert("declares no clause sections"):
         court.adjudicate(docket)
+
+
+def test_file_case_with_member_bound_filer(court, direct_vm, direct_alice, direct_bob):
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court, filer_address=str(direct_bob))
+    case = court.get_case(docket)
+    assert case["filer"].lower() == str(direct_bob).lower()
+    assert docket in court.cases_for_filer(str(direct_bob))
+    assert docket not in court.cases_for_filer(str(direct_alice))
+
+
+def test_file_case_with_invalid_filer_address_is_refused(court, direct_vm, direct_alice):
+    direct_vm.sender = direct_alice
+    with direct_vm.expect_revert("must be a 0x prefixed 20 byte address"):
+        file_clean_case(court, filer_address="not-an-address")
+
+
+def test_mark_settled_on_an_advanced_case_is_restricted_to_pool(
+    court, direct_vm, direct_owner, direct_alice, direct_bob, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    direct_vm.sender = direct_owner
+    court.set_pool(str(direct_bob))
+
+    direct_vm.sender = direct_bob
+    court.note_advance(docket, str(5_000 * ATTO))
+
+    direct_vm.sender = direct_owner
+    with direct_vm.expect_revert("only the advance pool may settle an advanced case"):
+        court.mark_settled(docket, str(5_000 * ATTO))
+
+    direct_vm.sender = direct_bob
+    court.mark_settled(docket, str(5_000 * ATTO))
+    case = court.get_case(docket)
+    assert case["status"] == "SETTLED"
+    assert int(case["settled_atto"]) == 5_000 * ATTO
+
+
+def test_mark_settled_by_pool_on_non_advanced_case_is_refused(
+    court, direct_vm, direct_owner, direct_alice, direct_bob, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    direct_vm.sender = direct_owner
+    court.set_pool(str(direct_bob))
+
+    direct_vm.sender = direct_bob
+    with direct_vm.expect_revert("only an advanced case can be settled by the advance pool"):
+        court.mark_settled(docket, str(5_000 * ATTO))
+
+
+def test_mark_settled_on_unadjudicated_filed_case_is_refused(
+    court, direct_vm, direct_owner, direct_alice
+):
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court)
+
+    direct_vm.sender = direct_owner
+    with direct_vm.expect_revert("has not been adjudicated"):
+        court.mark_settled(docket, str(5_000 * ATTO))
+
+
+def test_withdraw_bond_for_relayed_payout(
+    court, direct_vm, direct_alice, direct_bob, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    quote = real_quote(aetna_0157)
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1, quote=quote)
+
+    direct_vm.sender = direct_bob
+    direct_vm.value = ATTO // 4
+    court.request_review(docket)
+    direct_vm.value = 0
+
+    direct_vm.clear_mocks()
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(quote, overturn=False))
+    court.adjudicate(docket)
+    court.resolve_review(docket)
+
+    assert int(court.bond_of(str(direct_bob))) == ATTO // 4
+
+    # Alice relays the withdrawal for Bob
+    direct_vm.sender = direct_alice
+    with direct_vm.expect_revert("must be a 0x prefixed 20 byte address"):
+        court.withdraw_bond_for("invalid-address")
+
+    with direct_vm.expect_revert("nothing is owed"):
+        court.withdraw_bond_for(str(direct_alice))
+
+    withdrawn = court.withdraw_bond_for(str(direct_bob))
+    assert int(withdrawn) == ATTO // 4
+    assert int(court.bond_of(str(direct_bob))) == 0
+

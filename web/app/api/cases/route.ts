@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 
 import { buildCaseRecord } from '@/lib/deident';
@@ -22,6 +23,9 @@ const Body = z.object({
   cptCodes: z.array(z.string()).optional(),
   icd10Codes: z.array(z.string()).optional(),
   evidenceSha256: z.string().regex(/^[0-9a-f]{64}$/).optional(),
+  evidenceBytes: z.string().optional(),
+  payoutAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional(),
+  filerAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/).optional(),
 });
 
 /** The cases this member has filed. */
@@ -61,6 +65,10 @@ export async function POST(req: Request) {
     return Response.json({ error: `Some of those details did not look right. ${detail}` }, { status: 400 });
   }
 
+  const evidenceSha256 =
+    input.evidenceSha256 ??
+    createHash('sha256').update(input.letterText, 'utf8').digest('hex');
+
   let built;
   try {
     built = await buildCaseRecord({
@@ -75,7 +83,7 @@ export async function POST(req: Request) {
       sourceUrls: input.sourceUrls,
       cptCodes: input.cptCodes,
       icd10Codes: input.icd10Codes,
-      evidenceSha256: input.evidenceSha256 ?? null,
+      evidenceSha256,
     });
   } catch (err) {
     // A PhiLeakError lands here. It names the field and the kind, never the value.
@@ -91,6 +99,10 @@ export async function POST(req: Request) {
   }
 
   const record = built.record;
+  const filerAddress =
+    input.payoutAddress ??
+    input.filerAddress ??
+    member.memberAddress;
 
   let write;
   try {
@@ -108,6 +120,7 @@ export async function POST(req: Request) {
         record.service_month,
         record.disputed_amount_atto.toString(),
         record.evidence_sha256,
+        filerAddress,
       ],
     });
   } catch (err) {

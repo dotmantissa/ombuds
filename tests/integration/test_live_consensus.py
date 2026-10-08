@@ -419,15 +419,18 @@ def test_a_case_runs_from_filing_to_an_advance():
     assert court.get_case(args=[docket]).call()["status"] == "VERDICT"
 
     # The pool only moves if the court says so, and only ever to the filer.
+    #
+    # Fund it BEFORE asking for a quote. An empty pool refuses every docket alive on free
+    # capital alone, which says nothing about whether the court cleared this one, and
+    # quoting first is why this assertion used to fail against a verdict the court had
+    # already approved.
     gate = court.is_advanceable(args=[docket]).call()
+    assert_committed(pool.deposit(args=[]).transact(value=4 * ATTO), "funding the pool")
     quote = pool.quote_advance(args=[docket]).call()
 
     if gate["ok"]:
-        assert quote["eligible"] is True
+        assert quote["eligible"] is True, quote["reason"]
         assert int(quote["amount_atto"]) > 0
-
-        funded = pool.deposit(args=[]).transact(value=4 * ATTO)
-        assert_committed(funded, "funding the pool")
 
         advanced = pool.advance(args=[docket]).transact()
         assert_committed(advanced, "advancing against the verdict")

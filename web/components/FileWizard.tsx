@@ -74,6 +74,7 @@ export function FileWizard({
   const [reasonCode, setReasonCode] = useState('');
   const [serviceDate, setServiceDate] = useState('');
   const [amount, setAmount] = useState('');
+  const [payoutAddress, setPayoutAddress] = useState('');
   const [planId, setPlanId] = useState(rules[0]?.planId ?? '');
   const [stateCode, setStateCode] = useState(states[0]?.state ?? 'TX');
 
@@ -119,6 +120,12 @@ export function FileWizard({
     setError(null);
     try {
       const sources = [rule.bulletinUrl, rule.cmsSourceUrl].filter((u) => u !== '');
+      const encoder = new TextEncoder();
+      const hashBuffer = await crypto.subtle.digest('SHA-256', encoder.encode(letter));
+      const evidenceSha256 = Array.from(new Uint8Array(hashBuffer))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+
       const result = await call<{
         docket: string | null;
         txHash: string;
@@ -137,6 +144,8 @@ export function FileWizard({
           sourceUrls: sources,
           cptCodes: scan?.cptCodes,
           icd10Codes: scan?.icd10Codes,
+          evidenceSha256,
+          payoutAddress: payoutAddress.trim() || undefined,
         }),
       });
       if (result.docket !== null) {
@@ -473,6 +482,24 @@ export function FileWizard({
                       style={{ borderRadius: 'var(--radius-hair)' }}
                     />
                   </div>
+
+                  <div className="sm:col-span-2">
+                    <label htmlFor="payoutAddress" className="block text-14 text-text">
+                      Payout address (optional)
+                    </label>
+                    <p className="mt-1 text-13 text-text-2">
+                      Where advances and recovery surplus are paid. Defaults to your member address.
+                    </p>
+                    <input
+                      id="payoutAddress"
+                      type="text"
+                      placeholder="0x..."
+                      value={payoutAddress}
+                      onChange={(event) => setPayoutAddress(event.target.value)}
+                      className="mono mt-2 h-10 w-full border border-line bg-raised px-2.5 text-13 text-text outline-none focus-visible:border-signal"
+                      style={{ borderRadius: 'var(--radius-hair)' }}
+                    />
+                  </div>
                 </div>
               </Panel>
 
@@ -518,6 +545,7 @@ export function FileWizard({
                     ['Denial reason code', reasonCode || 'not stated'],
                     ['Month of service', serviceDate.slice(0, 7) || 'not set'],
                     ['Amount in dispute', amount === '' ? 'not set' : `$${amount}`],
+                    ['Payout recipient', payoutAddress.trim() || 'Authenticated member address'],
                   ].map(([key, value]) => (
                     <div key={key} className="flex flex-wrap items-baseline gap-x-3">
                       <dt className="mono w-[11rem] shrink-0 text-12 text-text-3">{key}</dt>
