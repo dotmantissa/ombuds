@@ -199,7 +199,8 @@ npm run dev              # the app on :3000
 Other scripts worth knowing:
 
 ```bash
-python3 scripts/build_sources.py   # rebuild data/sources.json, re-checking every URL
+npm run sources:build              # rebuild data/sources.json, re-checking every URL
+npm run fixtures:check             # does any captured bulletin still match the live page
 node scripts/check_chain.mjs       # read the three contracts back
 node scripts/e2e_case.mjs          # file, adjudicate and advance one real case
 node deploy/fund_pool.mjs 12       # put 12 GEN of real capital in the pool

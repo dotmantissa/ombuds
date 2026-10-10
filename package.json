@@ -16,7 +16,8 @@
     "test:integration": "gltest tests/integration -v -s --network studionet",
     "deploy:contracts": "node deploy/deploy.mjs",
     "seed:registry": "node deploy/seed_registry.mjs",
-    "verify:sources": "python3 scripts/verify_sources.py",
+    "sources:build": "python3 scripts/build_sources.py",
+    "fixtures:check": "python3 scripts/capture_fixtures.py --check",
     "test": "npm run lint:contracts && npm run test:contracts && npm run test:web",
     "env:sync": "node -e \"const fs=require('fs');const keep=l=>!/^VERCEL_/.test(l);fs.writeFileSync('web/.env.local',fs.readFileSync('.env','utf8').split('\\n').filter(keep).join('\\n'),{mode:0o600});console.log('web/.env.local refreshed from .env')\""
   },
