@@ -221,7 +221,12 @@ export interface CaseRecord {
  * `overturn_recommended`, `ground`, `clause_id` and `recoverable_band` are the
  * consensus critical fields: validators each re-fetch the sources, re-derive
  * the verdict and have to agree on these four exactly before anything is
- * written. `confidence` and `reasoning` are the leader's, not the panel's.
+ * written.
+ *
+ * `confidence` is NOT one of them. It is agreed only to within a tolerance, so
+ * it is a judgement figure and should be read as one. What the panel does agree
+ * exactly is `crosses_confidence_band`, measured against `confidence_floor` as
+ * it stood when they ruled, and that is the thing the pool reads.
  */
 export interface Verdict {
   docket: string;
@@ -233,8 +238,12 @@ export interface Verdict {
   clause_id: string;
   /** Consensus critical. A discrete payout band, never a continuous number. */
   recoverable_band: number;
-  /** 0 to 100. Drives whether the pool advances. */
+  /** 0 to 100, and only agreed to within a tolerance. Not a consensus figure. */
   confidence: number;
+  /** The floor this panel ruled against. Frozen, so a later change cannot move it. */
+  confidence_floor?: number;
+  /** Consensus critical. The panel's own answer on whether the pool may advance. */
+  crosses_confidence_band?: boolean;
   /** Digest over the consensus critical fields. */
   digest: string;
   citations: Citation[];

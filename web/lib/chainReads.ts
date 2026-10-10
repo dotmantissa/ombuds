@@ -58,6 +58,23 @@ export interface PoolStats {
   utilisation_bps: number;
 }
 
+/** One underwriter's position, as the pool reports it. */
+export interface PoolPosition {
+  address: string;
+  principal_atto: string;
+  active_principal_atto: string;
+  withdrawn_atto: string;
+  fees_earned_atto: string;
+  /** This position's share of every loss the pool has booked. */
+  loss_borne_atto: string;
+  /** What this position may actually take out, after fees and after losses. */
+  withdrawable_atto: string;
+  deposit_count: number;
+  share_bps: number;
+  first_deposit_at: string;
+  last_deposit_at: string;
+}
+
 async function attempt<T>(fn: () => Promise<T>): Promise<T | null> {
   try {
     return await fn();

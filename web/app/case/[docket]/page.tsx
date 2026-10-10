@@ -113,12 +113,20 @@ export default async function CasePage({ params }: { params: Promise<{ docket: s
                   >
                     {overturn ? 'overturn recommended' : 'denial upheld'}
                   </span>
+                  {/* The leader's figure, labelled as the judgement it is: validators
+                      agree it only to within a tolerance. The panel's exact agreement is
+                      the line below, measured against the floor they ruled under. */}
                   <span className="mono text-12 text-text-3">
-                    confidence {String(verdict.confidence)} of 100
+                    confidence {String(verdict.confidence)} of 100, as read
                   </span>
-                  {verdict.crosses_confidence_band === true && (
-                    <span className="mono text-12 text-signal-bright">clears the money line</span>
-                  )}
+                  {verdict.crosses_confidence_band === true ? (
+                    <span className="mono text-12 text-signal-bright">
+                      the panel agreed it clears the money line
+                      {typeof verdict.confidence_floor === 'number'
+                        ? ` of ${verdict.confidence_floor}`
+                        : ''}
+                    </span>
+                  ) : null}
                 </div>
 
                 <h2 className="display mt-5 text-25 text-text">
