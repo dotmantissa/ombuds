@@ -447,11 +447,10 @@
       "effective_to_inferred": true,
       "clause_sections": [
         "Scope of Policy",
-        "Medically Necessary",
+        "Medical Necessity",
         "Experimental, Investigational, or Unproven",
-        "Cosmetic",
-        "Policy Limitations and Exclusions",
-        "Applicable CPT / HCPCS / ICD-10 Codes"
+        "Related Policies",
+        "Background"
       ],
       "cms_source_url": "https://api.coverage.cms.gov/v1/data/ncd?ncdid=57&ncdver=5",
       "cms_display_id": "100.1",
@@ -480,11 +479,10 @@
       "effective_to_inferred": true,
       "clause_sections": [
         "Scope of Policy",
-        "Medically Necessary",
+        "Medical Necessity",
         "Experimental, Investigational, or Unproven",
-        "Cosmetic",
-        "Policy Limitations and Exclusions",
-        "Applicable CPT / HCPCS / ICD-10 Codes"
+        "Related Policies",
+        "Background"
       ],
       "cms_source_url": "https://api.coverage.cms.gov/v1/data/ncd?ncdid=226&ncdver=3",
       "cms_display_id": "240.4",
@@ -513,11 +511,10 @@
       "effective_to_inferred": true,
       "clause_sections": [
         "Scope of Policy",
-        "Medically Necessary",
+        "Medical Necessity",
         "Experimental, Investigational, or Unproven",
-        "Cosmetic",
-        "Policy Limitations and Exclusions",
-        "Applicable CPT / HCPCS / ICD-10 Codes"
+        "Related Policies",
+        "Background"
       ],
       "cms_source_url": "https://api.coverage.cms.gov/v1/data/ncd?ncdid=64&ncdver=1",
       "cms_display_id": "140.2",
@@ -546,11 +543,10 @@
       "effective_to_inferred": true,
       "clause_sections": [
         "Scope of Policy",
-        "Medically Necessary",
+        "Medical Necessity",
         "Experimental, Investigational, or Unproven",
-        "Cosmetic",
-        "Policy Limitations and Exclusions",
-        "Applicable CPT / HCPCS / ICD-10 Codes"
+        "Related Policies",
+        "Background"
       ],
       "cms_source_url": "https://api.coverage.cms.gov/v1/data/ncd?ncdid=245&ncdver=3",
       "cms_display_id": "50.3",
@@ -579,11 +575,10 @@
       "effective_to_inferred": true,
       "clause_sections": [
         "Scope of Policy",
-        "Medically Necessary",
+        "Medical Necessity",
         "Experimental, Investigational, or Unproven",
-        "Cosmetic",
-        "Policy Limitations and Exclusions",
-        "Applicable CPT / HCPCS / ICD-10 Codes"
+        "Related Policies",
+        "Background"
       ],
       "cms_source_url": "",
       "cms_display_id": "",
