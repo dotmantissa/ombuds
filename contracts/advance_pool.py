@@ -50,6 +50,8 @@ ATTO = 10**18
 
 ADVANCE_STATUSES = ("OUTSTANDING", "RECOVERED", "WRITTEN_OFF")
 
+ZERO_ADDRESS = "0x" + "0" * 40
+
 
 @allow_storage
 @dataclass
@@ -61,6 +63,9 @@ class Underwriter:
     first_deposit_at: str
     last_deposit_at: str
     deposit_count: u256
+    # Principal still working in the pool. Rises on a deposit, falls on a withdrawal that
+    # reaches past the fees owed, and is never derived from anything else. See withdraw().
+    active_principal_atto: u256
 
 
 @allow_storage
@@ -86,14 +91,29 @@ def _chain_stamp() -> str:
     return raw
 
 
+def _normalise_address(value) -> str:
+    """The one spelling of an address this contract keys maps by and compares on.
+
+    `str(gl.message.sender_address)` hands back the EIP-55 checksummed spelling, whereas an
+    address that arrived as a string has been through `_require_address` and is lowercase.
+    Comparing the two directly reads as correct and silently never matches, so everything
+    here is folded to lowercase first.
+    """
+    return str(value).strip().lower() if value is not None else ""
+
+
 def _require_address(label: str, value) -> str:
-    cleaned = str(value).strip().lower() if value is not None else ""
+    cleaned = _normalise_address(value)
     if not cleaned.startswith("0x") or len(cleaned) != 42:
         raise gl.vm.UserError(f"{ERROR_EXPECTED} {label} must be a 0x prefixed 20 byte address")
     try:
         int(cleaned[2:], 16)
     except ValueError:
         raise gl.vm.UserError(f"{ERROR_EXPECTED} {label} must be a 0x prefixed 20 byte address")
+    # Nothing is allowed to point at the burn address. This contract pays out to whatever
+    # address it is handed, so an address nobody holds the key to is money destroyed.
+    if cleaned == ZERO_ADDRESS:
+        raise gl.vm.UserError(f"{ERROR_EXPECTED} {label} must not be the zero address")
     return cleaned
 
 
@@ -182,7 +202,7 @@ class AdvancePool(gl.Contract):
     # ------------------------------------------------------------------------- internals
 
     def _assert_owner(self) -> None:
-        if str(gl.message.sender_address) != str(self.owner):
+        if _normalise_address(gl.message.sender_address) != _normalise_address(self.owner):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} caller is not the pool owner")
 
     def _free_capital(self) -> int:
@@ -227,16 +247,17 @@ class AdvancePool(gl.Contract):
         return headroom if headroom > 0 else 0
 
     def _active_principal(self, position: Underwriter) -> int:
-        """Remaining active principal taking into account withdrawn principal."""
-        principal = int(position.principal_atto)
-        withdrawn = int(position.withdrawn_atto)
-        fees_earned = int(position.fees_earned_atto)
-        withdrawn_principal = withdrawn - fees_earned if withdrawn > fees_earned else 0
-        active = principal - withdrawn_principal
-        return active if active > 0 else 0
+        """Principal this position still has working in the pool.
+
+        Read, never recomputed. Deriving it from `principal - (withdrawn - fees_earned)`
+        looks equivalent and is not: every later fee accrual raises `fees_earned`, which
+        shrinks the derived withdrawn principal and hands back capital the underwriter has
+        already taken out of the pool. withdraw() is the only thing that lowers this.
+        """
+        return int(position.active_principal_atto)
 
     def _total_active_principal(self) -> int:
-        """Sum of all underwriters' active principal."""
+        """Sum of all underwriters' active principal. The denominator for a fee split."""
         total = 0
         for address in self.underwriter_list:
             pos = self.underwriters.get(address)
@@ -283,10 +304,11 @@ class AdvancePool(gl.Contract):
 
     @gl.public.view
     def position_of(self, address: str) -> dict:
-        record = self.underwriters.get(address)
+        cleaned = _normalise_address(address)
+        record = self.underwriters.get(cleaned)
         if record is None:
             return {
-                "address": address,
+                "address": cleaned,
                 "principal_atto": "0",
                 "active_principal_atto": "0",
                 "withdrawn_atto": "0",
@@ -430,7 +452,7 @@ class AdvancePool(gl.Contract):
         if amount <= 0:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} a deposit must carry value")
 
-        address = str(gl.message.sender_address)
+        address = _normalise_address(gl.message.sender_address)
         stamp = _chain_stamp()
         record = self.underwriters.get(address)
         if record is None:
@@ -442,10 +464,12 @@ class AdvancePool(gl.Contract):
                 first_deposit_at=stamp,
                 last_deposit_at=stamp,
                 deposit_count=u256(1),
+                active_principal_atto=u256(amount),
             )
             self.underwriter_list.append(address)
         else:
             record.principal_atto = u256(int(record.principal_atto) + amount)
+            record.active_principal_atto = u256(int(record.active_principal_atto) + amount)
             record.last_deposit_at = stamp
             record.deposit_count = u256(int(record.deposit_count) + 1)
 
@@ -460,7 +484,7 @@ class AdvancePool(gl.Contract):
     @gl.public.write
     def withdraw(self, amount_atto: str) -> dict:
         """Take capital back out, but only what is not currently out on an advance."""
-        address = str(gl.message.sender_address)
+        address = _normalise_address(gl.message.sender_address)
         record = self.underwriters.get(address)
         if record is None:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} {address} has no position in this pool")
@@ -491,6 +515,23 @@ class AdvancePool(gl.Contract):
                 "advances that have not been recovered yet"
             )
 
+        # Split the withdrawal between fees and principal, and remember the split.
+        #
+        # `entitled` is active principal plus the fees this position has earned and not yet
+        # taken out, so `entitled - active` is exactly the unwithdrawn fee balance. Fees
+        # come out first and only the remainder bites into principal.
+        #
+        # The subtraction has to be recorded, not re-derived later. `withdrawn -
+        # fees_earned` is the same number today and a different one tomorrow, because the
+        # next recovery raises `fees_earned` and so quietly gives back principal that is
+        # already out of the pool. Recording it means a withdrawal is permanent: active
+        # principal only ever falls here and only ever rises on a deposit.
+        active = int(record.active_principal_atto)
+        unwithdrawn_fees = entitled - active if entitled > active else 0
+        from_principal = amount - unwithdrawn_fees if amount > unwithdrawn_fees else 0
+        remaining_active = active - from_principal
+        record.active_principal_atto = u256(remaining_active if remaining_active > 0 else 0)
+
         record.withdrawn_atto = u256(int(record.withdrawn_atto) + amount)
         self.total_withdrawn_atto = u256(int(self.total_withdrawn_atto) + amount)
         gl.get_contract_at(gl.message.sender_address).emit_transfer(
@@ -499,6 +540,9 @@ class AdvancePool(gl.Contract):
         return {
             "address": address,
             "withdrawn_atto": str(amount),
+            "from_fees_atto": str(amount - from_principal),
+            "from_principal_atto": str(from_principal),
+            "active_principal_atto": str(int(record.active_principal_atto)),
             "remaining_principal_atto": str(entitled - amount),
             "free_capital_atto": str(self._free_capital()),
         }
@@ -588,9 +632,9 @@ class AdvancePool(gl.Contract):
         if record.status != "OUTSTANDING":
             raise gl.vm.UserError(f"{ERROR_EXPECTED} '{docket}' is already {record.status}")
 
-        caller = str(gl.message.sender_address)
-        is_owner = caller == str(self.owner)
-        is_member = caller == str(record.member)
+        caller = _normalise_address(gl.message.sender_address)
+        is_owner = caller == _normalise_address(self.owner)
+        is_member = caller == _normalise_address(record.member)
         is_underwriter = self.underwriters.get(caller) is not None
         if not (is_owner or is_member or is_underwriter):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} caller is not authorised to record recovery")

@@ -123,6 +123,8 @@ BAND_UPPER_USD = (500, 2000, 7500, 25000, 75000)
 
 ATTO = 10**18
 
+ZERO_ADDRESS = "0x" + "0" * 40
+
 # Section headings a published bulletin actually uses. A verdict may only cite a section
 # the registry declared for that bulletin, which keeps clause_id a closed enum and
 # therefore comparable.
@@ -260,16 +262,30 @@ def _digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def _normalise_address(value) -> str:
+    """The one spelling of an address this contract keys maps by and compares on.
+
+    `str(gl.message.sender_address)` hands back the EIP-55 checksummed spelling, whereas an
+    address that arrived as a string has been through `_require_address` and is lowercase.
+    Comparing the two directly reads as correct and silently never matches, so everything
+    here is folded to lowercase first.
+    """
+    return str(value).strip().lower() if value is not None else ""
+
+
 def _require_address(label: str, value) -> str:
-    cleaned = str(value).strip().lower() if value is not None else ""
+    cleaned = _normalise_address(value)
     if not cleaned.startswith("0x") or len(cleaned) != 42:
         raise gl.vm.UserError(f"{ERROR_EXPECTED} {label} must be a 0x prefixed 20 byte address")
     try:
         int(cleaned[2:], 16)
     except ValueError:
         raise gl.vm.UserError(f"{ERROR_EXPECTED} {label} must be a 0x prefixed 20 byte address")
+    # A case bound to the burn address is a case whose advance and whose bond can never be
+    # collected by anybody, so it is refused at the door rather than discovered later.
+    if cleaned == ZERO_ADDRESS:
+        raise gl.vm.UserError(f"{ERROR_EXPECTED} {label} must not be the zero address")
     return cleaned
-
 
 
 def _chain_stamp() -> str:
@@ -974,7 +990,7 @@ class OmbudsCourt(gl.Contract):
     # ------------------------------------------------------------------------- internals
 
     def _assert_owner(self) -> None:
-        if str(gl.message.sender_address) != str(self.owner):
+        if _normalise_address(gl.message.sender_address) != _normalise_address(self.owner):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} caller is not the court owner")
 
     def _case_or_raise(self, docket: str) -> Case:
@@ -1149,7 +1165,7 @@ class OmbudsCourt(gl.Contract):
 
     @gl.public.view
     def cases_for_filer(self, filer: str) -> list:
-        bucket = self.by_filer.get(filer)
+        bucket = self.by_filer.get(_normalise_address(filer))
         if bucket is None:
             return []
         return [d for d in bucket]
@@ -1176,7 +1192,7 @@ class OmbudsCourt(gl.Contract):
 
     @gl.public.view
     def bond_of(self, address: str) -> str:
-        return str(int(self.bond_claimable.get(address, u256(0))))
+        return str(int(self.bond_claimable.get(_normalise_address(address), u256(0))))
 
     @gl.public.view
     def phi_scan(self, text: str) -> list:
@@ -1297,7 +1313,7 @@ class OmbudsCourt(gl.Contract):
         self._bump_status("FILED", 1)
         self.total_disputed_atto = u256(int(self.total_disputed_atto) + disputed)
 
-        self.by_filer.get_or_insert_default(str(filer)).append(docket)
+        self.by_filer.get_or_insert_default(_normalise_address(filer)).append(docket)
 
         return docket
 
@@ -1596,7 +1612,7 @@ class OmbudsCourt(gl.Contract):
                 f"{ERROR_EXPECTED} a review bond of {required} atto is required, {posted} was sent"
             )
 
-        requester = str(gl.message.sender_address)
+        requester = _normalise_address(gl.message.sender_address)
         self._bump_status(entry_status, -1)
         case.status = "UNDER_REVIEW"
         case.panel_round = u256(int(case.panel_round) + 1)
@@ -1669,11 +1685,11 @@ class OmbudsCourt(gl.Contract):
                 f"{ERROR_EXPECTED} '{docket}' is {entry_status} and has no open review"
             )
 
-        caller = str(gl.message.sender_address)
+        caller = _normalise_address(gl.message.sender_address)
         requester = str(case.review_requester)
         heard = entry_status == "REVIEWED"
 
-        if not heard and caller != str(self.owner) and caller != requester:
+        if not heard and caller != _normalise_address(self.owner) and caller != requester:
             raise gl.vm.UserError(
                 f"{ERROR_EXPECTED} only the challenger or the court may abandon a review "
                 "the panel has not heard yet"
@@ -1709,8 +1725,7 @@ class OmbudsCourt(gl.Contract):
     @gl.public.write
     def withdraw_bond_for(self, requester: str) -> str:
         """Take back a bond that was awarded to a requester, relayed directly to them."""
-        _require_address("requester", requester)
-        target = requester.strip()
+        target = _require_address("requester", requester)
         owed = int(self.bond_claimable.get(target, u256(0)))
         if owed <= 0:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} nothing is owed to {target}")
@@ -1721,7 +1736,7 @@ class OmbudsCourt(gl.Contract):
     @gl.public.write
     def note_advance(self, docket: str, advanced_atto: str) -> None:
         """Recorded by the AdvancePool when it moves money against a verdict."""
-        if str(gl.message.sender_address) != str(self.pool):
+        if _normalise_address(gl.message.sender_address) != _normalise_address(self.pool):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} only the advance pool may record an advance")
         case = self._case_or_raise(docket)
         entry_status = str(case.status)
@@ -1744,8 +1759,10 @@ class OmbudsCourt(gl.Contract):
     @gl.public.write
     def mark_settled(self, docket: str, settled_atto: str) -> None:
         """The insurer paid. Closes the case and lets the pool recover."""
-        caller = str(gl.message.sender_address)
-        if caller != str(self.owner) and caller != str(self.pool):
+        caller = _normalise_address(gl.message.sender_address)
+        owner = _normalise_address(self.owner)
+        pool = _normalise_address(self.pool)
+        if caller != owner and caller != pool:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} only the court or the pool may settle a case")
         case = self._case_or_raise(docket)
         entry_status = str(case.status)
@@ -1753,11 +1770,11 @@ class OmbudsCourt(gl.Contract):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} '{docket}' is already closed")
         if entry_status == "FILED":
             raise gl.vm.UserError(f"{ERROR_EXPECTED} '{docket}' has not been adjudicated")
-        if entry_status == "ADVANCED" and caller != str(self.pool):
+        if entry_status == "ADVANCED" and caller != pool:
             raise gl.vm.UserError(
                 f"{ERROR_EXPECTED} only the advance pool may settle an advanced case"
             )
-        if caller == str(self.pool) and entry_status != "ADVANCED":
+        if caller == pool and entry_status != "ADVANCED":
             raise gl.vm.UserError(
                 f"{ERROR_EXPECTED} only an advanced case can be settled by the advance pool"
             )

@@ -27,10 +27,15 @@ export function Providers({ children }: { children: ReactNode }) {
       appId={appId}
       config={{
         loginMethods: ['email'],
-        // No embedded wallet is created. The relayer signs on the member's behalf, so
-        // there is nothing for a member to hold, lose or be phished out of.
+        // An embedded wallet is created on first sign in, and the member never sees it.
+        // There is no seed phrase to lose and no extension to install: the account is
+        // recovered by signing in with the same email, and the relayer still pays the gas.
+        //
+        // It is here because the pool pays an advance to an address, and that address has
+        // to be one the member can actually spend from. A case filed against an address
+        // nobody holds the key to is an advance paid into a hole.
         embeddedWallets: {
-          ethereum: { createOnLogin: 'off' },
+          ethereum: { createOnLogin: 'users-without-wallets' },
           solana: { createOnLogin: 'off' },
         },
         appearance: {

@@ -48,8 +48,8 @@ GenLayer studio network, chain id 61999.
 | Contract | Address | What it holds |
 |---|---|---|
 | `PlanRegistry` | [`0x0905d1C488c626A1016Cd219E69141a141Cc0bD2`](https://genlayer-explorer.vercel.app) | Published coverage rules, their effective windows, and a digest of each one's policy text |
-| `OmbudsCourt` | [`0x2659c0cf1E651be0D3413f7a0647b169ceAdAb92`](https://genlayer-explorer.vercel.app) | Cases, verdicts, the appeal path and the de-identification tripwire |
-| `AdvancePool` | [`0xc5Ef4A8eC731512B38A43209113325d0d6841C5f`](https://genlayer-explorer.vercel.app) | Underwriter capital, advances to members, recoveries and write offs |
+| `OmbudsCourt` | [`0xE22D3Ba51D020Dcf621c2F565cDffA066c7D0840`](https://genlayer-explorer.vercel.app) | Cases, verdicts, the appeal path and the de-identification tripwire |
+| `AdvancePool` | [`0xbbBA3A16492fFF8765D41BCA65f208ac4f995863`](https://genlayer-explorer.vercel.app) | Underwriter capital, advances to members, recoveries and write offs |
 
 All five registered plan rules carry a consensus digest that every validator independently
 agreed on after re-fetching the live bulletin.
@@ -189,7 +189,8 @@ cp .env.example .env     # then fill it in
 
 ```bash
 npm run lint:contracts   # genvm-lint, all three contracts
-npm run test:contracts   # 189 direct mode tests
+npm run test:contracts   # 219 direct mode tests
+npm run test:web         # 45 tests over the filing API path
 npm run deploy:contracts # studio network
 npm run seed:registry    # register the verified rules, then refresh each digest
 npm run dev              # the app on :3000
@@ -212,19 +213,21 @@ contracts/
   ombuds_court.py     the adjudicator, the validator comparison rule and the appeal path.
   advance_pool.py     underwriter capital, advances, recoveries and write offs.
 tests/
-  direct/             189 tests, run against genuine captured source documents.
+  direct/             219 tests, run against genuine captured source documents.
   fixtures/           real Aetna bulletin pages and CMS payloads, byte for byte.
 web/data/sources.json every source, with the status it answered with when checked.
 deploy/               deployment, registry seeding, pool funding.
 scripts/              source verification, chain checks, the end to end run.
 web/                  Next.js 15 App Router, the API routes and the pages.
   lib/deident.ts      the de-identification layer.
+  lib/filing.ts       the evidence commitment and whose address the money is bound to.
   lib/schema.sql      the search index, which is explicitly not the record.
+  tests/              45 tests over the filing path, run with no network at all.
 ```
 
 ## The tests
 
-189 direct mode tests across the three contracts, run against the real Aetna bulletin pages
+219 direct mode tests across the three contracts, run against the real Aetna bulletin pages
 and CMS payloads captured in `tests/fixtures`. A hand written stub would quietly prove
 nothing, because the contracts slice policy text by looking for real section headings.
 

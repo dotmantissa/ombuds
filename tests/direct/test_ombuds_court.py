@@ -837,7 +837,7 @@ def test_posting_a_bond_opens_a_second_round(
 
     assert out["panel_round"] == 2
     assert int(out["bond_atto"]) == ATTO // 4
-    assert out["requester"] == str(direct_bob)
+    assert out["requester"] == str(direct_bob).lower()
     case = court.get_case(docket)
     assert case["status"] == "UNDER_REVIEW"
     assert case["panel_round"] == 2
@@ -917,7 +917,7 @@ def test_the_full_appeal_lifecycle_releases_the_bond(
     assert settled["heard"] is True
     assert settled["verdict_changed"] is True
     assert settled["bond_returned"] is True
-    assert settled["awarded_to"] == str(direct_bob)
+    assert settled["awarded_to"] == str(direct_bob).lower()
     assert int(settled["bond_atto"]) == ATTO // 4
 
     # 5. The bond left the contract and is claimable by the person who posted it.
@@ -1072,7 +1072,7 @@ def test_anyone_may_close_a_review_the_panel_has_heard(
     out = court.resolve_review(docket)
     assert out["bond_returned"] is True
     # Still awarded to whoever posted it, not to whoever happened to close it.
-    assert out["awarded_to"] == str(direct_bob)
+    assert out["awarded_to"] == str(direct_bob).lower()
     assert int(court.bond_of(str(direct_bob))) == ATTO // 4
     assert int(court.bond_of(str(direct_charlie))) == 0
 
@@ -1500,3 +1500,75 @@ def test_withdraw_bond_for_relayed_payout(
     assert int(withdrawn) == ATTO // 4
     assert int(court.bond_of(str(direct_bob))) == 0
 
+
+
+# ------------------------------------- the member a filing belongs to, in any spelling
+#
+# A filing is relayed. The member never signs anything, so the address the court records
+# as the filer arrives as an argument, and it arrives from Privy in lowercase. The court
+# derives the checksummed spelling from its own Address type, so the index a member is
+# looked up in has to answer to both or "my cases" comes back empty for everybody.
+
+
+def test_a_filing_is_found_by_the_member_address_in_any_spelling(
+    court, direct_vm, direct_alice
+):
+    member = "0x" + "Bb" * 20
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court, filer_address=member.lower())
+
+    for spelling in (member, member.lower(), member.upper().replace("0X", "0x")):
+        assert court.cases_for_filer(spelling) == [docket]
+
+    # And the relayer that signed it does not own the case.
+    assert court.cases_for_filer(str(direct_alice)) == []
+
+
+def test_a_filing_cannot_be_bound_to_the_zero_address(court, direct_vm, direct_alice):
+    """An advance and a bond are both paid to the filer, so the burn address is refused."""
+    direct_vm.sender = direct_alice
+    with direct_vm.expect_revert("must not be the zero address"):
+        file_clean_case(court, filer_address="0x" + "0" * 40)
+
+
+def test_the_pool_cannot_be_pointed_at_the_zero_address(court, direct_vm, direct_owner):
+    direct_vm.sender = direct_owner
+    with direct_vm.expect_revert("must not be the zero address"):
+        court.set_pool("0x" + "0" * 40)
+    with direct_vm.expect_revert("must not be the zero address"):
+        court.set_registry("0x" + "0" * 40)
+
+
+def test_a_bond_is_relayed_back_to_the_member_in_any_spelling(
+    court, direct_vm, direct_alice, direct_bob, aetna_0157, cms_100_1
+):
+    """The member asks for their bond through the relayer, so the lookup cannot be fussy."""
+    direct_vm.sender = direct_alice
+    quote = real_quote(aetna_0157)
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1, quote=quote)
+
+    direct_vm.sender = direct_bob
+    direct_vm.value = ATTO // 4
+    court.request_review(docket)
+    direct_vm.value = 0
+
+    direct_vm.clear_mocks()
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(quote, overturn=False))
+    court.adjudicate(docket)
+    court.resolve_review(docket)
+
+    mixed = str(direct_bob)
+    assert mixed != mixed.lower()  # otherwise this test proves nothing
+    assert int(court.bond_of(mixed)) == ATTO // 4
+    assert int(court.bond_of(mixed.lower())) == ATTO // 4
+
+    # Alice relays the withdrawal, naming Bob in the spelling the API holds.
+    direct_vm.sender = direct_alice
+    assert int(court.withdraw_bond_for(mixed.lower())) == ATTO // 4
+    assert int(court.bond_of(mixed)) == 0
+
+
+def test_a_relayed_bond_withdrawal_refuses_the_zero_address(court, direct_vm, direct_alice):
+    direct_vm.sender = direct_alice
+    with direct_vm.expect_revert("must not be the zero address"):
+        court.withdraw_bond_for("0x" + "0" * 40)

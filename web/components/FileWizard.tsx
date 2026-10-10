@@ -14,6 +14,8 @@ import { useRouter } from 'next/navigation';
 
 import { ConsensusPip, ConsensusProgress } from '@/components/ConsensusProgress';
 import { Code, FullRule, Panel, RailNote } from '@/components/ui/primitives';
+import { normaliseAddress } from '@/lib/address';
+import { sha256Hex } from '@/lib/deident';
 import { useApi } from '@/lib/useApi';
 
 interface RuleOption {
@@ -66,7 +68,7 @@ export function FileWizard({
   reasonCodes: ReasonCode[];
 }) {
   const router = useRouter();
-  const { call, authenticated } = useApi();
+  const { call, authenticated, memberAddress } = useApi();
 
   const [step, setStep] = useState(0);
   const [letter, setLetter] = useState('');
@@ -87,6 +89,12 @@ export function FileWizard({
     () => states.find((row) => row.state === stateCode) ?? null,
     [states, stateCode],
   );
+
+  // Where the money would go. The member's own wallet unless they nominate somewhere
+  // else, and never the relayer, which is the address that actually signs the filing.
+  const typedPayout = payoutAddress.trim();
+  const payoutAddressBad = typedPayout !== '' && normaliseAddress(typedPayout) === null;
+  const payoutRecipient = typedPayout !== '' ? typedPayout : memberAddress;
 
   async function runScan() {
     setBusy(true);
@@ -120,12 +128,9 @@ export function FileWizard({
     setError(null);
     try {
       const sources = [rule.bulletinUrl, rule.cmsSourceUrl].filter((u) => u !== '');
-      const encoder = new TextEncoder();
-      const hashBuffer = await crypto.subtle.digest('SHA-256', encoder.encode(letter));
-      const evidenceSha256 = Array.from(new Uint8Array(hashBuffer))
-        .map((b) => b.toString(16).padStart(2, '0'))
-        .join('');
-
+      // The letter is hashed here, on this machine, with the same function the server
+      // would use. The hash is the commitment; the letter itself never leaves.
+      const evidenceSha256 = await sha256Hex(letter);
       const result = await call<{
         docket: string | null;
         txHash: string;
@@ -168,7 +173,12 @@ export function FileWizard({
   const canScan = letter.trim().length > 80;
   const canChooseRule = rule !== null && rationale.trim().length > 20;
   const canFile =
-    canChooseRule && serviceDate !== '' && amount.trim() !== '' && (scan?.accepted ?? false);
+    canChooseRule &&
+    serviceDate !== '' &&
+    amount.trim() !== '' &&
+    (scan?.accepted ?? false) &&
+    !payoutAddressBad &&
+    payoutRecipient !== null;
 
   return (
     <div className="mt-10">
@@ -488,17 +498,32 @@ export function FileWizard({
                       Payout address (optional)
                     </label>
                     <p className="mt-1 text-13 text-text-2">
-                      Where advances and recovery surplus are paid. Defaults to your member address.
+                      Where an advance and any recovery surplus are paid.{' '}
+                      {memberAddress === null
+                        ? 'We could not read your own wallet address, so you need to enter one here.'
+                        : 'Leave it blank and it goes to your own wallet.'}
                     </p>
                     <input
                       id="payoutAddress"
                       type="text"
-                      placeholder="0x..."
+                      spellCheck={false}
+                      autoComplete="off"
+                      placeholder={memberAddress ?? '0x...'}
                       value={payoutAddress}
                       onChange={(event) => setPayoutAddress(event.target.value)}
-                      className="mono mt-2 h-10 w-full border border-line bg-raised px-2.5 text-13 text-text outline-none focus-visible:border-signal"
-                      style={{ borderRadius: 'var(--radius-hair)' }}
+                      aria-invalid={payoutAddressBad}
+                      aria-describedby={payoutAddressBad ? 'payoutAddressError' : undefined}
+                      className="mono mt-2 h-10 w-full border bg-raised px-2.5 text-13 text-text outline-none focus-visible:border-signal"
+                      style={{
+                        borderRadius: 'var(--radius-hair)',
+                        borderColor: payoutAddressBad ? 'var(--loss)' : 'var(--line)',
+                      }}
                     />
+                    {payoutAddressBad ? (
+                      <p id="payoutAddressError" className="mt-2 text-13 text-loss">
+                        That is not a 0x address followed by 40 hex characters.
+                      </p>
+                    ) : null}
                   </div>
                 </div>
               </Panel>
@@ -545,7 +570,7 @@ export function FileWizard({
                     ['Denial reason code', reasonCode || 'not stated'],
                     ['Month of service', serviceDate.slice(0, 7) || 'not set'],
                     ['Amount in dispute', amount === '' ? 'not set' : `$${amount}`],
-                    ['Payout recipient', payoutAddress.trim() || 'Authenticated member address'],
+                    ['Paid to', payoutRecipient ?? 'no address yet, enter one above'],
                   ].map(([key, value]) => (
                     <div key={key} className="flex flex-wrap items-baseline gap-x-3">
                       <dt className="mono w-[11rem] shrink-0 text-12 text-text-3">{key}</dt>

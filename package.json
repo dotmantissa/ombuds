@@ -12,11 +12,12 @@
     "typecheck": "npm --prefix web run typecheck",
     "lint:contracts": "genvm-lint check contracts/plan_registry.py && genvm-lint check contracts/ombuds_court.py && genvm-lint check contracts/advance_pool.py",
     "test:contracts": "pytest tests/direct -q",
+    "test:web": "npm --prefix web run test",
     "test:integration": "gltest tests/integration -v -s --network studionet",
     "deploy:contracts": "node deploy/deploy.mjs",
     "seed:registry": "node deploy/seed_registry.mjs",
     "verify:sources": "python3 scripts/verify_sources.py",
-    "test": "npm run lint:contracts && npm run test:contracts",
+    "test": "npm run lint:contracts && npm run test:contracts && npm run test:web",
     "env:sync": "node -e \"const fs=require('fs');const keep=l=>!/^VERCEL_/.test(l);fs.writeFileSync('web/.env.local',fs.readFileSync('.env','utf8').split('\\n').filter(keep).join('\\n'),{mode:0o600});console.log('web/.env.local refreshed from .env')\""
   },
   "dependencies": {

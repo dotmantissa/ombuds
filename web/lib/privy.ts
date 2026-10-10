@@ -17,6 +17,7 @@
 import { createHash } from 'node:crypto';
 import { PrivyClient, type AuthTokenClaims } from '@privy-io/server-auth';
 
+import { evmWalletAddress } from './address';
 import { requireEnv } from './env';
 import { upsertMember, type MemberRow } from './db';
 
@@ -67,21 +68,14 @@ function readTokens(req: Request): { idToken: string | null; accessToken: string
 export interface VerifiedCaller {
   did: string;
   email: string | null;
+  /** The member's own Ethereum address, or null when Privy has not made one yet. */
   walletAddress: string | null;
   claims: AuthTokenClaims | null;
 }
 
 /**
- * Deterministic 20-byte EVM address derived from a member's unique Privy DID.
- * Guarantees every authenticated member has a stable, member-bound payout and filer address.
- */
-export function deriveMemberAddress(privyDid: string): string {
-  const hash = createHash('sha256').update(`ombuds:member:${privyDid}`, 'utf8').digest();
-  return '0x' + hash.subarray(12, 32).toString('hex');
-}
-
-/**
- * Verify the caller and return their Privy DID plus, when available, their email and wallet address.
+ * Verify the caller and return their Privy DID plus, when available, their email and the
+ * address of their own wallet.
  *
  * The email is used once, to derive a hash, and is never persisted or logged.
  */
@@ -99,8 +93,7 @@ export async function verifyPrivyToken(req: Request): Promise<VerifiedCaller> {
     try {
       const user = await privy.getUser({ idToken });
       const email = user.email?.address ?? null;
-      const walletAddress = user.wallet?.address?.toLowerCase() ?? null;
-      return { did: user.id, email, walletAddress, claims: null };
+      return { did: user.id, email, walletAddress: evmWalletAddress(user), claims: null };
     } catch {
       // Fall through to the access token path rather than failing outright, since an
       // expired identity token with a live access token is a normal thing to see.
@@ -123,10 +116,11 @@ export async function verifyPrivyToken(req: Request): Promise<VerifiedCaller> {
   try {
     const user = await privy.getUserById(claims.userId);
     email = user.email?.address ?? null;
-    walletAddress = user.wallet?.address?.toLowerCase() ?? null;
+    walletAddress = evmWalletAddress(user);
   } catch {
     // A rate limited or failed lookup is survivable. The DID is what identifies the
-    // member; the email only ever becomes a hash.
+    // member; the email only ever becomes a hash. The address being unknown is not an
+    // error either, because the caller has to handle not having one anyway.
     email = null;
   }
 
@@ -138,11 +132,20 @@ export function hashEmail(email: string): string {
   return createHash('sha256').update(email.trim().toLowerCase(), 'utf8').digest('hex');
 }
 
-export type AuthenticatedMember = MemberRow & { memberAddress: string };
+/**
+ * A verified member, plus the address their money is paid to.
+ *
+ * `memberAddress` is null when Privy has not created a wallet for them yet. That is a
+ * real state and the caller has to handle it. The previous shape of this type promised a
+ * string and kept the promise by hashing the member's DID into something address shaped,
+ * which has no private key behind it: a case bound to one of those addresses pays its
+ * advance into a hole. See resolvePayoutAddress in lib/filing.ts for what happens now.
+ */
+export type AuthenticatedMember = MemberRow & { memberAddress: string | null };
 
 /**
- * Verify the caller and make sure they exist in the index, then return their row
- * with their bound member address.
+ * Verify the caller and make sure they exist in the index, then return their row with
+ * the address their advance and their bond would be paid to.
  *
  * Every API route that writes anything starts here.
  */
@@ -156,12 +159,8 @@ export async function requireMember(req: Request): Promise<AuthenticatedMember> 
       : createHash('sha256').update(`did:${caller.did}`, 'utf8').digest('hex');
 
   const row = await upsertMember(caller.did, emailHash);
-  const memberAddress = caller.walletAddress ?? deriveMemberAddress(caller.did);
 
-  return {
-    ...row,
-    memberAddress,
-  };
+  return { ...row, memberAddress: caller.walletAddress };
 }
 
 /** Turn an AuthError into a Response. Anything else becomes a flat 500 with no detail. */

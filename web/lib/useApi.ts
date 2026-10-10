@@ -1,7 +1,9 @@
 'use client';
 
 import { usePrivy } from '@privy-io/react-auth';
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
+
+import { evmWalletAddress } from '@/lib/address';
 
 /**
  * Fetch with the Privy token attached.
@@ -9,9 +11,16 @@ import { useCallback } from 'react';
  * Every write the app makes goes through a server route that verifies this token and then
  * signs the chain transaction with the relayer key. The browser never holds a key and
  * never sees a gas prompt, which is the whole point.
+ *
+ * `memberAddress` is the member's own wallet address, which is where an advance and a
+ * recovery surplus are paid. It is read with the same function the server verifies with,
+ * so what the form shows and what the chain records cannot drift apart. It is null before
+ * Privy has finished making the wallet, and the UI has to say so rather than guess.
  */
 export function useApi() {
-  const { getAccessToken, authenticated } = usePrivy();
+  const { getAccessToken, authenticated, user } = usePrivy();
+
+  const memberAddress = useMemo(() => evmWalletAddress(user), [user]);
 
   const call = useCallback(
     async <T>(path: string, init?: RequestInit): Promise<T> => {
@@ -43,5 +52,5 @@ export function useApi() {
     [authenticated, getAccessToken],
   );
 
-  return { call, authenticated };
+  return { call, authenticated, memberAddress };
 }

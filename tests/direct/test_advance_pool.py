@@ -19,6 +19,8 @@ from conftest import (
 BAND_CAPS = (ATTO // 4, ATTO // 2, ATTO, ATTO * 2, ATTO * 3, ATTO * 4)
 CAPS_CSV = ",".join(str(v) for v in BAND_CAPS)
 
+BPS = 10000
+
 DOCKET = "OMB-2026-000001"
 
 
@@ -423,6 +425,9 @@ def test_an_underwriter_can_take_free_capital_back(pool, direct_vm, direct_alice
     out = pool.withdraw(str(4 * ATTO))
 
     assert int(out["withdrawn_atto"]) == 4 * ATTO
+    assert int(out["from_fees_atto"]) == 0
+    assert int(out["from_principal_atto"]) == 4 * ATTO
+    assert int(out["active_principal_atto"]) == 6 * ATTO
     assert int(out["remaining_principal_atto"]) == 6 * ATTO
     assert int(pool.pool_stats()["total_value_governed_atto"]) == 6 * ATTO
 
@@ -656,3 +661,322 @@ def test_full_withdrawal_receives_zero_fee_allocation(pool, direct_vm, direct_al
     bob_cut = int(pool.position_of(str(direct_bob))["fees_earned_atto"])
     assert bob_cut == 0
     assert alice_cut == fee
+
+
+
+# ------------------------------------------------- withdrawn principal, over many cycles
+#
+# One recovery is not enough to catch the thing that was actually wrong here. The old
+# code did not store how much principal an underwriter had taken out; it worked the figure
+# out as `withdrawn - fees_earned` whenever it was asked. That is right exactly once. The
+# next recovery raises fees_earned, which shrinks the subtraction, which hands the
+# underwriter back principal that left the pool weeks ago, and their share of every
+# subsequent fee grows with it. So these tests all run several cycles and watch the figure
+# that is supposed to stand still.
+
+
+def cycle(pool, vm, docket, payer):
+    """Advance against a docket, then have payer settle it in full. Returns the fee."""
+    amount = int(pool.advance(docket)["amount_atto"])
+    fee = (amount * 1200) // BPS
+    vm.sender = payer
+    vm.value = amount + fee
+    pool.record_recovery(docket)
+    vm.value = 0
+    return fee
+
+
+def active_of(pool, who) -> int:
+    return int(pool.position_of(str(who))["active_principal_atto"])
+
+
+def fees_of(pool, who) -> int:
+    return int(pool.position_of(str(who))["fees_earned_atto"])
+
+
+def test_fee_accrual_never_gives_back_withdrawn_principal(
+    pool, direct_vm, direct_alice, direct_bob
+):
+    """Bob took half his capital out. Three recoveries later it is still out.
+
+    This is the test the previous version fails. Under `withdrawn - fees_earned` Bob's
+    active principal reads 50 GEN before the first recovery and 50 GEN plus his own fee
+    cut after it, which is capital the pool does not hold.
+    """
+    fund(pool, direct_vm, direct_alice, 100 * ATTO)
+    fund(pool, direct_vm, direct_bob, 100 * ATTO)
+
+    direct_vm.sender = direct_bob
+    pool.withdraw(str(50 * ATTO))
+    assert active_of(pool, direct_bob) == 50 * ATTO
+    assert active_of(pool, direct_alice) == 100 * ATTO
+
+    earned = 0
+    for round_number in (1, 2, 3):
+        fee = cycle(pool, direct_vm, f"OMB-2026-00000{round_number}", direct_alice)
+        earned += (fee * 50) // 150
+
+        # The whole point. Fees are earned on 50 GEN and keep being earned on 50 GEN.
+        assert active_of(pool, direct_bob) == 50 * ATTO
+        assert active_of(pool, direct_alice) == 100 * ATTO
+        assert fees_of(pool, direct_bob) == earned
+        assert pool.position_of(str(direct_bob))["share_bps"] == (50 * BPS) // 150
+
+
+def test_a_withdrawal_takes_fees_first_and_then_principal(
+    pool, direct_vm, direct_alice, direct_bob
+):
+    """A withdrawal larger than the fees owed eats into principal, and says how much.
+
+    Fees first is the order that favours the underwriter: it keeps their capital working
+    for as long as the arithmetic allows. What it must not do is lose track of the part
+    that was principal, which is what the receipt now states outright.
+    """
+    fund(pool, direct_vm, direct_alice, 100 * ATTO)
+    fund(pool, direct_vm, direct_bob, 100 * ATTO)
+
+    first_fee = cycle(pool, direct_vm, "OMB-2026-000001", direct_alice)
+    bob_fees = (first_fee * 100) // 200
+    assert fees_of(pool, direct_bob) == bob_fees
+    assert active_of(pool, direct_bob) == 100 * ATTO
+
+    direct_vm.sender = direct_bob
+    receipt = pool.withdraw(str(bob_fees + 10 * ATTO))
+    assert int(receipt["from_fees_atto"]) == bob_fees
+    assert int(receipt["from_principal_atto"]) == 10 * ATTO
+    assert int(receipt["active_principal_atto"]) == 90 * ATTO
+    assert active_of(pool, direct_bob) == 90 * ATTO
+
+    # The second cycle is where the old arithmetic went wrong: Bob's withdrawal is now
+    # smaller than the fees he has earned in total, so the derived figure reads his
+    # principal back as whole again.
+    second_fee = cycle(pool, direct_vm, "OMB-2026-000002", direct_alice)
+    assert active_of(pool, direct_bob) == 90 * ATTO
+    assert fees_of(pool, direct_bob) == bob_fees + (second_fee * 90) // 190
+    assert active_of(pool, direct_alice) == 100 * ATTO
+
+
+def test_withdrawing_only_fees_leaves_principal_working(
+    pool, direct_vm, direct_alice, direct_bob
+):
+    """Taking the fees out is not taking capital out, and must not read as if it were."""
+    fund(pool, direct_vm, direct_alice, 100 * ATTO)
+    fund(pool, direct_vm, direct_bob, 100 * ATTO)
+
+    first_fee = cycle(pool, direct_vm, "OMB-2026-000001", direct_alice)
+    bob_fees = (first_fee * 100) // 200
+
+    direct_vm.sender = direct_bob
+    receipt = pool.withdraw(str(bob_fees))
+    assert int(receipt["from_fees_atto"]) == bob_fees
+    assert int(receipt["from_principal_atto"]) == 0
+    assert active_of(pool, direct_bob) == 100 * ATTO
+
+    second_fee = cycle(pool, direct_vm, "OMB-2026-000002", direct_alice)
+    assert active_of(pool, direct_bob) == 100 * ATTO
+    assert fees_of(pool, direct_bob) == bob_fees + (second_fee * 100) // 200
+
+
+def test_an_underwriter_who_left_earns_nothing_from_later_recoveries(
+    pool, direct_vm, direct_alice, direct_bob
+):
+    """A position closed to zero stays closed, however many recoveries come in after."""
+    fund(pool, direct_vm, direct_alice, 100 * ATTO)
+    fund(pool, direct_vm, direct_bob, 50 * ATTO)
+
+    direct_vm.sender = direct_bob
+    pool.withdraw(str(50 * ATTO))
+    assert active_of(pool, direct_bob) == 0
+
+    for round_number in (1, 2, 3):
+        fee = cycle(pool, direct_vm, f"OMB-2026-00000{round_number}", direct_alice)
+        assert active_of(pool, direct_bob) == 0
+        assert fees_of(pool, direct_bob) == 0
+        assert pool.position_of(str(direct_bob))["share_bps"] == 0
+        # Alice is the only active capital, so the whole fee is hers.
+        assert fees_of(pool, direct_alice) > 0
+        assert fee > 0
+
+
+def test_depositing_again_after_a_withdrawal_adds_only_the_new_capital(
+    pool, direct_vm, direct_alice, direct_bob
+):
+    """A fresh deposit raises active principal by the deposit, not back to the old figure."""
+    fund(pool, direct_vm, direct_alice, 100 * ATTO)
+    fund(pool, direct_vm, direct_bob, 100 * ATTO)
+
+    direct_vm.sender = direct_bob
+    pool.withdraw(str(50 * ATTO))
+
+    first_fee = cycle(pool, direct_vm, "OMB-2026-000001", direct_alice)
+    bob_fees = (first_fee * 50) // 150
+    assert active_of(pool, direct_bob) == 50 * ATTO
+
+    fund(pool, direct_vm, direct_bob, 30 * ATTO)
+    assert active_of(pool, direct_bob) == 80 * ATTO
+    assert int(pool.position_of(str(direct_bob))["principal_atto"]) == 130 * ATTO
+
+    second_fee = cycle(pool, direct_vm, "OMB-2026-000002", direct_alice)
+    assert active_of(pool, direct_bob) == 80 * ATTO
+    assert fees_of(pool, direct_bob) == bob_fees + (second_fee * 80) // 180
+
+
+def test_active_principal_is_exactly_deposits_less_withdrawn_principal(
+    pool, direct_vm, direct_alice, direct_bob, direct_charlie
+):
+    """The invariant behind all of the above, checked after every step.
+
+    Total active principal is deposits less the part of every withdrawal that came out of
+    principal, and nothing else moves it. Each withdrawal receipt states that part, so the
+    test adds up what the contract said and holds the running total against it. A figure
+    that drifts upward between recoveries fails here even if no single assertion above
+    happened to look at the position that drifted.
+    """
+    everyone = (direct_alice, direct_bob, direct_charlie)
+    deposited = 0
+    withdrawn = 0
+    withdrawn_principal = 0
+
+    def invariant():
+        total_active = sum(active_of(pool, who) for who in everyone)
+        stats = pool.pool_stats()
+        assert int(stats["total_deposited_atto"]) == deposited
+        assert int(stats["total_withdrawn_atto"]) == withdrawn
+        assert total_active == deposited - withdrawn_principal
+        shares = sum(pool.position_of(str(who))["share_bps"] for who in everyone)
+        # Integer division loses at most one basis point per underwriter.
+        assert total_active == 0 or BPS - len(everyone) <= shares <= BPS
+
+    def take_out(who, amount):
+        nonlocal withdrawn, withdrawn_principal
+        direct_vm.sender = who
+        receipt = pool.withdraw(str(amount))
+        withdrawn += amount
+        withdrawn_principal += int(receipt["from_principal_atto"])
+        assert int(receipt["from_fees_atto"]) + int(receipt["from_principal_atto"]) == amount
+        invariant()
+
+    for who, amount in ((direct_alice, 60 * ATTO), (direct_bob, 30 * ATTO), (direct_charlie, 10 * ATTO)):
+        fund(pool, direct_vm, who, amount)
+        deposited += amount
+    invariant()
+
+    for round_number in (1, 2, 3, 4):
+        cycle(pool, direct_vm, f"OMB-2026-00000{round_number}", direct_alice)
+        invariant()
+        take_out(direct_bob, 2 * ATTO)
+
+    # Charlie closes out entirely, fees and all, and the invariant still holds.
+    charlie_all = (
+        int(pool.position_of(str(direct_charlie))["principal_atto"])
+        + fees_of(pool, direct_charlie)
+    )
+    take_out(direct_charlie, charlie_all)
+    assert active_of(pool, direct_charlie) == 0
+
+    cycle(pool, direct_vm, "OMB-2026-000005", direct_alice)
+    assert active_of(pool, direct_charlie) == 0
+    invariant()
+
+
+# -------------------------------------------- the member the money is actually bound to
+#
+# An advance is paid to the address the court recorded as the filer, which is now the
+# member's own address rather than the relayer's. Two things follow. The pool has to
+# recognise that member when they turn up, whichever spelling of their address they
+# arrive in, and it must refuse to pay an address nobody holds a key to.
+
+
+def test_the_member_may_settle_their_own_advance(
+    pool, direct_vm, direct_alice, direct_bob
+):
+    """The member is named in the authorisation check, so the check has to find them.
+
+    The court hands the pool the filer in the lowercase spelling the API filed it with,
+    while `str(gl.message.sender_address)` is the EIP-55 checksummed one. Comparing the
+    two unnormalised reads as correct and never matches, which locked the member out of
+    the one branch written for them.
+    """
+    member = str(direct_bob)
+    assert member != member.lower()  # otherwise this test proves nothing
+    install_stubs(direct_vm, court_stub(filer=member.lower()))
+
+    fund(pool, direct_vm, direct_alice, 100 * ATTO)
+    advance = int(pool.advance(DOCKET)["amount_atto"])
+    fee = (advance * 1200) // BPS
+
+    direct_vm.sender = direct_bob
+    direct_vm.value = advance + fee
+    out = pool.record_recovery(DOCKET)
+    direct_vm.value = 0
+
+    assert out["status"] == "RECOVERED"
+    assert pool.get_advance(DOCKET)["status"] == "RECOVERED"
+
+
+def test_a_stranger_still_cannot_settle_an_advance(pool, direct_vm, direct_alice, direct_bob):
+    """Normalising the comparison must not widen it."""
+    install_stubs(direct_vm, court_stub(filer=str(direct_bob).lower()))
+    fund(pool, direct_vm, direct_alice, 100 * ATTO)
+    advance = int(pool.advance(DOCKET)["amount_atto"])
+
+    direct_vm.sender = "0x" + "99" * 20
+    direct_vm.value = advance
+    with direct_vm.expect_revert("caller is not authorised to record recovery"):
+        pool.record_recovery(DOCKET)
+    direct_vm.value = 0
+
+
+def test_a_position_reads_back_in_any_spelling(pool, direct_vm, direct_alice):
+    """position_of answers to the checksummed and the lowercase form of one address."""
+    fund(pool, direct_vm, direct_alice, 12 * ATTO)
+    checksummed = str(direct_alice)
+    assert checksummed != checksummed.lower()  # otherwise this test proves nothing
+    for spelling in (checksummed, checksummed.lower(), checksummed.upper().replace("0X", "0x")):
+        assert int(pool.position_of(spelling)["principal_atto"]) == 12 * ATTO
+
+
+def test_a_claim_reads_back_in_any_spelling(make_pool, direct_vm, direct_alice):
+    mixed = "0x" + "Bb" * 20
+    pool, _ = make_pool(stub=court_stub(filer=mixed))
+    fund(pool, direct_vm, direct_alice, 100 * ATTO)
+    advance = int(pool.advance(DOCKET)["amount_atto"])
+    fee = (advance * 1200) // BPS
+
+    direct_vm.sender = direct_alice
+    direct_vm.value = advance + fee + (3 * ATTO)
+    pool.record_recovery(DOCKET)
+    direct_vm.value = 0
+
+    assert int(pool.claimable_of(mixed)) == 3 * ATTO
+    assert int(pool.claimable_of(mixed.lower())) == 3 * ATTO
+    assert int(pool.claim_for(mixed.lower())) == 3 * ATTO
+    assert int(pool.claimable_of(mixed)) == 0
+
+
+def test_the_pool_refuses_to_advance_to_the_zero_address(make_pool, direct_vm, direct_alice):
+    """An advance to the burn address is money destroyed, so it is refused at the gate."""
+    pool, _ = make_pool(stub=court_stub(filer="0x" + "0" * 40))
+    fund(pool, direct_vm, direct_alice, 100 * ATTO)
+    with direct_vm.expect_revert("must not be the zero address"):
+        pool.advance(DOCKET)
+
+
+def test_the_pool_refuses_to_claim_to_the_zero_address(pool, direct_vm, direct_alice):
+    fund(pool, direct_vm, direct_alice, 10 * ATTO)
+    with direct_vm.expect_revert("must not be the zero address"):
+        pool.claim_for("0x" + "0" * 40)
+
+
+def test_the_constructor_refuses_the_zero_address_as_the_court(
+    direct_deploy, direct_vm, direct_owner
+):
+    direct_vm.sender = direct_owner
+    with direct_vm.expect_revert("must not be the zero address"):
+        direct_deploy(CONTRACTS["pool"], "0x" + "0" * 40, 3500, 1200, 7000, CAPS_CSV)
+
+
+def test_the_court_cannot_be_repointed_at_the_zero_address(pool, direct_vm, direct_owner):
+    direct_vm.sender = direct_owner
+    with direct_vm.expect_revert("must not be the zero address"):
+        pool.set_court("0x" + "0" * 40)

@@ -1,15 +1,22 @@
 /**
  * deploy/redeploy_court_and_pool.mjs
  *
- * Round 2 redeploy. Replaces OmbudsCourt and AdvancePool and KEEPS the existing
- * PlanRegistry.
+ * Replaces OmbudsCourt and AdvancePool and KEEPS the existing PlanRegistry.
  *
- * Why only two of three. OmbudsCourt has to move because its storage layout changed:
- * Case gained pre_review_ruling, Verdict gained ruling_digest, and REVIEWED is a new
- * status. AdvancePool's code did not change, but its ledger holds an outstanding advance
- * against a docket the new court will never have heard of, so settle() on it could never
- * succeed. PlanRegistry did not change at all, and its five rules carry consensus digests
- * that cost real validator rounds to seed, so re-seeding would buy nothing.
+ * Why only two of three. Both moving contracts have changed in ways a live deployment
+ * cannot absorb in place:
+ *
+ *   AdvancePool  Underwriter gained active_principal_atto. A field added after deployment
+ *                reads zero out of existing storage, so every underwriter already in the
+ *                old pool would read as having no capital working and would stop earning
+ *                a share of the fees they are owed.
+ *   OmbudsCourt  by_filer and bond_claimable are now keyed by the lowercase spelling of
+ *                an address rather than the checksummed one. The entries already written
+ *                under the old spelling would be unreachable, which means a member's
+ *                cases and a challenger's bond would both read as missing.
+ *
+ * PlanRegistry did not change, and its five rules carry consensus digests that cost real
+ * validator rounds to seed, so re-seeding would buy nothing.
  *
  * Runs in six steps and records each one in deploy/.redeploy-state.json, because the
  * studio endpoint drops connections often enough that a half finished run is a real
@@ -38,6 +45,10 @@ const BAND_CAPS_ATTO = [ATTO / 4n, ATTO / 2n, ATTO, ATTO * 2n, ATTO * 3n, ATTO *
   .map(String)
   .join(',');
 const FUND_GEN = 12n;
+
+// Left spare for the gas the deposit itself costs, so the balance check cannot pass and
+// then leave the transaction unable to pay for itself.
+const GAS_MARGIN_ATTO = ATTO / 2n;
 
 const STATE_PATH = path.join(ROOT, 'deploy', '.redeploy-state.json');
 const DRY = process.argv.includes('--dry-run');
@@ -220,9 +231,47 @@ async function main() {
   });
 
   // ---- 9d: fund the new pool, then write the addresses down --------------
-  await step('fund', `funding the new pool with ${FUND_GEN} GEN`, async () => {
-    await send(client, pool.address, 'deposit', [], `deposit ${FUND_GEN} GEN`, FUND_GEN * ATTO);
-    return { deposited_atto: String(FUND_GEN * ATTO) };
+  await step('fund', `funding the new pool with up to ${FUND_GEN} GEN`, async () => {
+    // The withdrawal above pays out `on="finalized"`, so the capital it releases is not
+    // in the deployer's balance the moment the step returns. Studionet can sit on that
+    // for a long time, and a redeploy that blocks until it lands leaves the new pool
+    // deployed, wired and empty, which is the one state worth avoiding.
+    //
+    // So this waits a while for the full target and then funds the pool with the largest
+    // whole number of GEN the deployer can actually afford. What went in is recorded
+    // rather than assumed. Topping up afterwards is `node deploy/fund_pool.mjs <gen>`.
+    const target = FUND_GEN * ATTO;
+    const deadline = Date.now() + 5 * 60 * 1000;
+    let balance = await client.getBalance({ address: account.address });
+
+    while (balance < target + GAS_MARGIN_ATTO && Date.now() < deadline) {
+      console.log(
+        `    waiting on the old pool's withdrawal to finalise: have ` +
+          `${balance / ATTO} GEN, want ${(target + GAS_MARGIN_ATTO) / ATTO} GEN`,
+      );
+      await sleep(15000);
+      balance = await client.getBalance({ address: account.address });
+    }
+
+    const spendable = balance > GAS_MARGIN_ATTO ? balance - GAS_MARGIN_ATTO : 0n;
+    const amount = spendable < target ? (spendable / ATTO) * ATTO : target;
+
+    if (amount <= 0n) {
+      throw new Error(
+        `the deployer holds ${balance} atto, which is not enough to fund the pool at all. ` +
+          'Re-run to resume from this step once the withdrawal has finalised.',
+      );
+    }
+    if (amount < target) {
+      console.log(
+        `    the withdrawal has not finalised yet, so funding with ${amount / ATTO} GEN ` +
+          `of the ${FUND_GEN} GEN intended. Top up with: node deploy/fund_pool.mjs ` +
+          `${(target - amount) / ATTO}`,
+      );
+    }
+
+    await send(client, pool.address, 'deposit', [], `deposit ${amount / ATTO} GEN`, amount);
+    return { deposited_atto: String(amount), intended_atto: String(target) };
   });
 
   await step('record', 'writing deployed_contracts.json and .env', async () => {
@@ -234,8 +283,14 @@ async function main() {
       deployedAt: new Date().toISOString(),
       note:
         'PlanRegistry is the original deployment and was deliberately kept: its code did ' +
-        'not change this round and its rules carry consensus digests. OmbudsCourt and ' +
-        'AdvancePool were redeployed because the court storage layout changed.',
+        'not change this round and its rules carry consensus digests. AdvancePool was ' +
+        'redeployed because Underwriter gained active_principal_atto, and OmbudsCourt ' +
+        'because by_filer and bond_claimable are now keyed by the lowercase spelling of ' +
+        'an address. Both are storage changes a live deployment cannot absorb in place.',
+      capital: {
+        intendedAtto: String(FUND_GEN * ATTO),
+        depositedAtto: state.steps.fund?.deposited_atto ?? String(FUND_GEN * ATTO),
+      },
       terms: {
         minConfidence: MIN_CONFIDENCE,
         reviewBondAtto: REVIEW_BOND_ATTO.toString(),
