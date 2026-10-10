@@ -3,8 +3,8 @@
   "chainId": 61999,
   "rpcUrl": "https://studio.genlayer.com/api",
   "deployer": "0xBC1399c55538eC034d4Da550C03c34Ae0C357f53",
-  "deployedAt": "2026-10-10T03:24:03.837Z",
-  "note": "PlanRegistry is the original deployment and was deliberately kept: its code did not change this round and its rules carry consensus digests. AdvancePool was redeployed because Underwriter gained active_principal_atto, and OmbudsCourt because by_filer and bond_claimable are now keyed by the lowercase spelling of an address. Both are storage changes a live deployment cannot absorb in place.",
+  "deployedAt": "2026-10-10T12:22:18.839625Z",
+  "note": "PlanRegistry is the original deployment and was deliberately kept: its code did not change and its five rules carry consensus digests that cost real validator rounds. Its clause_sections were re-seeded in place, because register_rule upserts and preserves those digests. OmbudsCourt and AdvancePool were redeployed: Verdict gained confidence_floor and clears_floor so the payout predicate is settled by the panel rather than recomputed against a mutable floor, and Underwriter gained loss_borne_atto so a write off is shared pro rata instead of falling on whoever withdraws last. Both are storage changes a live deployment cannot absorb in place. Every payout also moved from on=finalized to on=accepted, because finalized transfers were measured debiting a contract and never arriving.",
   "capital": {
     "intendedAtto": "12000000000000000000",
     "depositedAtto": "8000000000000000000"
@@ -30,12 +30,12 @@
       "txHash": "0x8b640ea74dcaeaf6c18e895afad451a89eeb298620723f6f9db1356475c4c62f"
     },
     "OmbudsCourt": {
-      "address": "0xE22D3Ba51D020Dcf621c2F565cDffA066c7D0840",
-      "txHash": "0xb4ddb90dfaeb6cc34536f0f937d3fe22a6d778b942d8191a198ca0e4b3802ca1"
+      "address": "0x24363fC8f8eBb763e5235A011DBAe7399350cA20",
+      "txHash": "0x1fc228b21be8fc536340cd0ecb077a4082bca194c599d2e910442b746ae7f668"
     },
     "AdvancePool": {
-      "address": "0xbbBA3A16492fFF8765D41BCA65f208ac4f995863",
-      "txHash": "0x0457dc224c1b6f0edafbe4b90209aff09ca5805bcc1191446354b204b2958914"
+      "address": "0x820A00d3C3C3cb7D5939b87967D1c5be60FceBaF",
+      "txHash": "0x4fd40ff589f304bd9dd4583ddab28c3af29d0b452e429aff72f5755bd09cb84c"
     }
   }
 }

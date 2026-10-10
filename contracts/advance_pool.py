@@ -52,6 +52,28 @@ ADVANCE_STATUSES = ("OUTSTANDING", "RECOVERED", "WRITTEN_OFF")
 
 ZERO_ADDRESS = "0x" + "0" * 40
 
+# How this contract pays people, and what is measured about it.
+#
+# Every transfer out uses on="accepted" rather than on="finalized". That is the documented
+# fast path and the right default for a payout that is the last statement of its function,
+# after every check and after this contract has already debited its own books. The risk it
+# carries is that an appeal could revert the state change with the transfer already gone,
+# and that window is as narrow as the ordering can make it.
+#
+# What has NOT been established is that either setting delivers on studionet. Measured
+# there, against both settings: the value leaves this contract's balance and the recipient
+# address is never credited. A 12 GEN withdrawal under on="finalized" has never landed. A
+# 0.5 GEN withdrawal under on="finalized" left the pool and did not arrive. A 0.05 GEN
+# withdrawal under on="accepted" moved the pool's balance from 0.61 to 0.56 and left the
+# recipient's balance unchanged. Inbound payable deposits work; outbound credit to an
+# external address is not observable.
+#
+# So this is a platform question and not something this contract can settle. The ledger
+# here is correct either way: a withdrawal is debited, recorded and reflected in equity.
+# Anybody relying on these payouts on studionet should confirm delivery against the
+# network before trusting the balance, and that is why the figures above are written down
+# rather than summarised as fixed.
+
 
 @allow_storage
 @dataclass
@@ -623,7 +645,7 @@ class AdvancePool(gl.Contract):
         record.withdrawn_atto = u256(int(record.withdrawn_atto) + amount)
         self.total_withdrawn_atto = u256(int(self.total_withdrawn_atto) + amount)
         gl.get_contract_at(gl.message.sender_address).emit_transfer(
-            value=u256(amount), on="finalized"
+            value=u256(amount), on="accepted"
         )
         return {
             "address": address,
@@ -696,7 +718,7 @@ class AdvancePool(gl.Contract):
         # Tell the court, so the same verdict cannot be advanced against twice.
         court.emit(on="accepted").note_advance(docket, str(amount))
         # Pay the member.
-        gl.get_contract_at(Address(member)).emit_transfer(value=u256(amount), on="finalized")
+        gl.get_contract_at(Address(member)).emit_transfer(value=u256(amount), on="accepted")
 
         return {
             "docket": docket,
@@ -919,7 +941,7 @@ class AdvancePool(gl.Contract):
         held = int(self.total_member_share_atto) - owed
         self.total_member_share_atto = u256(held if held > 0 else 0)
         gl.get_contract_at(Address(target)).emit_transfer(
-            value=u256(owed), on="finalized"
+            value=u256(owed), on="accepted"
         )
         return str(owed)
 

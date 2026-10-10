@@ -48,8 +48,8 @@ GenLayer studio network, chain id 61999.
 | Contract | Address | What it holds |
 |---|---|---|
 | `PlanRegistry` | [`0x0905d1C488c626A1016Cd219E69141a141Cc0bD2`](https://genlayer-explorer.vercel.app) | Published coverage rules, their effective windows, and a digest of each one's policy text |
-| `OmbudsCourt` | [`0xE22D3Ba51D020Dcf621c2F565cDffA066c7D0840`](https://genlayer-explorer.vercel.app) | Cases, verdicts, the appeal path and the de-identification tripwire |
-| `AdvancePool` | [`0xbbBA3A16492fFF8765D41BCA65f208ac4f995863`](https://genlayer-explorer.vercel.app) | Underwriter capital, advances to members, recoveries and write offs |
+| `OmbudsCourt` | [`0x24363fC8f8eBb763e5235A011DBAe7399350cA20`](https://genlayer-explorer.vercel.app) | Cases, verdicts, the appeal path and the de-identification tripwire |
+| `AdvancePool` | [`0x820A00d3C3C3cb7D5939b87967D1c5be60FceBaF`](https://genlayer-explorer.vercel.app) | Underwriter capital, advances to members, recoveries and write offs |
 
 All five registered plan rules carry a consensus digest that every validator independently
 agreed on after re-fetching the live bulletin.

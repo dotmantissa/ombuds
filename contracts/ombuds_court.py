@@ -1860,7 +1860,9 @@ class OmbudsCourt(gl.Contract):
         if owed <= 0:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} nothing is owed to {target}")
         self.bond_claimable[target] = u256(0)
-        gl.get_contract_at(Address(target)).emit_transfer(value=u256(owed), on="finalized")
+        # on="accepted", not "finalized". See the note in advance_pool.py for what is
+        # measured about delivery on studionet under either setting.
+        gl.get_contract_at(Address(target)).emit_transfer(value=u256(owed), on="accepted")
         return str(owed)
 
     @gl.public.write
