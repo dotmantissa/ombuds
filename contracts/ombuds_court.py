@@ -116,6 +116,12 @@ CASE_STATUSES = (
 # A review is open, and its bond is still held, in exactly these two states.
 REVIEW_STATUSES = ("UNDER_REVIEW", "REVIEWED")
 
+# A case in one of these is over. Nothing may be advanced against it and nothing may
+# reopen it. SETTLED and REJECTED used to be absent from the advance gate, which meant the
+# pool would pay real capital against a claim the court had already closed, including one
+# the court had rejected as never having been fileable.
+TERMINAL_STATUSES = ("SETTLED", "REJECTED")
+
 # Payout bands in whole dollars. The web client carries the identical boundaries in
 # web/lib/bands.ts and any change has to be made in both places or the UI will label a
 # verdict with a band the chain did not issue.
@@ -233,6 +239,16 @@ class Verdict:
     # "is this the same ruling" rather than "is this the same transaction". Appended at
     # the end of the dataclass because storage layout is positional.
     ruling_digest: str
+    # The confidence floor as it stood when this panel ruled, and the panel's own verdict
+    # on whether the ruling cleared it.
+    #
+    # `confidence` is only bound to within CONFIDENCE_TOLERANCE, so it is a judgement
+    # figure and not a number two nodes agree on exactly. What the validators DO agree on
+    # exactly is which side of the floor they landed, and that is the thing that releases
+    # money. Recording the answer instead of recomputing it is what stops a later
+    # set_min_confidence re-deciding a payout the panel already settled.
+    confidence_floor: u256
+    clears_floor: bool
 
 
 # -------------------------------------------------------------------- text normalisation
@@ -421,6 +437,11 @@ def _parse_int(raw, label: str) -> int:
         raise gl.vm.UserError(f"{ERROR_LLM} '{label}' was not a number: '{raw}'")
 
 
+def quote_raw_value(answer: dict) -> str:
+    raw = _pick(answer, "clause_quote", ("quote", "citation", "excerpt"))
+    return str(raw if raw is not None else "")
+
+
 def _pick(payload: dict, primary: str, alternates: tuple):
     if primary in payload:
         return payload[primary]
@@ -428,6 +449,62 @@ def _pick(payload: dict, primary: str, alternates: tuple):
         if alternate in payload:
             return payload[alternate]
     return None
+
+
+def _section_body(bulletin: str, section: str, allowed: tuple) -> str:
+    """The run of text that belongs to one declared section of a bulletin.
+
+    From the section heading up to whichever other declared heading comes next. The
+    headings are the registry's closed list, which is what makes this slice well defined
+    rather than a guess about document structure.
+
+    A heading usually occurs twice in these pages, once in the table of contents and once
+    over the section itself, and the table of contents entry is followed immediately by
+    the next heading. So every occurrence is measured and the longest body wins, which
+    picks the real section deterministically without needing to understand the markup.
+
+    Returns "" when the heading cannot be located at all. The caller treats that as a
+    refusal rather than as permission, because a citation cannot be anchored to a section
+    the document does not publish.
+    """
+    best = ""
+    search_from = 0
+    while True:
+        start = bulletin.find(section, search_from)
+        if start < 0:
+            break
+        body_from = start + len(section)
+        end = len(bulletin)
+        for other in allowed:
+            if other == section:
+                continue
+            where = bulletin.find(other, body_from)
+            if where >= 0 and where < end:
+                end = where
+        body = bulletin[body_from:end]
+        if len(body) > len(best):
+            best = body
+        search_from = body_from
+    return best
+
+
+def _quote_in_section(quote: str, bulletin: str, section: str, allowed: tuple) -> bool:
+    """Is this quote inside the section it is being filed under.
+
+    `_quote_in` only asks whether the sentence is somewhere in the bulletin. That is not
+    the same question. A verdict stores clause_section and clause_quote together, the
+    appeal letter prints them together as "verbatim from <section>", and a regulator
+    checking the letter looks the quote up in that section. Binding existence but not
+    provenance let a validator accept an exclusion lifted from "Scope of Policy" filed
+    under "Medically Necessary" on a verdict that overturned a denial, which is the worst
+    version of this: a letter citing an exclusion as the clause that grants coverage.
+    """
+    if len(quote) < QUOTE_MIN_CHARS:
+        return False
+    body = _section_body(bulletin, section, allowed)
+    if body == "":
+        return False
+    return quote in body
 
 
 def _match_section(candidate: str, allowed: tuple) -> str:
@@ -484,8 +561,8 @@ def _verify_quote(quote: str, haystack: str) -> str:
     if len(probe) >= 60 and probe in haystack:
         return probe
     raise gl.vm.UserError(
-        f"{ERROR_LLM} quoted clause does not appear in the fetched bulletin, "
-        "the citation was fabricated"
+        f"{ERROR_LLM} quoted clause does not appear in the section it was filed under, "
+        "so the citation is either fabricated or attributed to the wrong section"
     )
 
 
@@ -701,6 +778,11 @@ that carries your reasoning. Do not paraphrase it and do not stitch two sentence
 together. If you cannot find a sentence that supports your conclusion, say the denial
 stands.
 
+The sentence MUST come from inside the section you name in clause_section. The two are
+stored together and printed together on the member's appeal letter, so a sentence taken
+from a different section of this bulletin will be rejected and the whole verdict thrown
+away. Pick the section that actually contains your sentence.
+
 Estimate what the member could recover, in whole US dollars, capped at the amount in
 dispute. If the denial stands, that number is zero.
 
@@ -736,8 +818,17 @@ the decision."""
     section_raw = _pick(answer, "clause_section", ("section", "clause", "clause_id"))
     section = _match_section(str(section_raw if section_raw is not None else ""), sections)
 
-    quote_raw = _pick(answer, "clause_quote", ("quote", "citation", "excerpt"))
-    quote = _verify_quote(str(quote_raw if quote_raw is not None else ""), bulletin)
+    # The quote is verified against the body of the section it is being filed under, not
+    # against the whole document. clause_section and clause_quote are stored together and
+    # printed together on the member's letter, so a sentence from somewhere else is a
+    # citation that does not check out when anybody follows it up.
+    section_body = _section_body(bulletin, section, sections)
+    if section_body.strip() == "":
+        raise gl.vm.UserError(
+            f"{ERROR_EXPECTED} the bulletin does not publish a section '{section}', so a "
+            "verdict could not cite anything checkable in it"
+        )
+    quote = _verify_quote(str(quote_raw_value(answer)), section_body)
 
     confidence = _parse_int(
         _pick(answer, "confidence", ("confidence_score", "certainty")), "confidence"
@@ -839,11 +930,25 @@ def _bound_to_sources(brief: dict, leader: dict, evidence: dict) -> bool:
     bulletin = str(evidence["bulletin"])
     coverage = str(evidence["coverage"])
 
-    # The quote. Not compared with the validator's own quote, which may legally
-    # differ, but required to exist verbatim in the validator's own copy of the
-    # document. A sentence the model invented is in nobody's copy.
+    # The section being cited is settled first, because the quote is then checked
+    # against that section rather than against the document at large.
+    #
+    # It has to be one the registry declared, and it has to be the section the already
+    # compared clause_id was built from. That makes clause_section a derivative of a
+    # field consensus has agreed on rather than a free string the leader chose.
+    leader_section = str(leader.get("clause_section", ""))
+    if leader_section not in sections:
+        return False
+    if f"{bulletin_number}#{_slug(leader_section)}" != str(leader.get("clause_id", "")):
+        return False
+
+    # The quote. Not compared with the validator's own quote, which may legally differ,
+    # but required to exist verbatim INSIDE THAT SECTION of the validator's own copy of
+    # the document. A sentence the model invented is in nobody's copy, and a sentence
+    # lifted from a different section is a citation that fails the moment a regulator
+    # looks it up under the heading the letter gave them.
     leader_quote = str(leader.get("clause_quote", ""))
-    if not _quote_in(leader_quote, bulletin):
+    if not _quote_in_section(leader_quote, bulletin, leader_section, sections):
         return False
 
     # Model authored text does not get to carry patient shaped strings onto a
@@ -854,16 +959,6 @@ def _bound_to_sources(brief: dict, leader: dict, evidence: dict) -> bool:
     if len(leader_reasoning) < 20 or len(leader_reasoning) > 1200:
         return False
     if len(_phi_kinds(leader_reasoning)) > 0:
-        return False
-
-    # The section being cited has to be one the registry declared, and it has to
-    # be the section the already compared clause_id was built from. That makes
-    # clause_section a derivative of a field consensus has agreed on rather than
-    # a free string the leader chose.
-    leader_section = str(leader.get("clause_section", ""))
-    if leader_section not in sections:
-        return False
-    if f"{bulletin_number}#{_slug(leader_section)}" != str(leader.get("clause_id", "")):
         return False
 
     # The fingerprints the whole verdict is anchored to. Compared against digests
@@ -1076,7 +1171,10 @@ class OmbudsCourt(gl.Contract):
             "ruling_digest": verdict.ruling_digest,
             "adjudicated_at": verdict.adjudicated_at,
             "panel_round": int(verdict.panel_round),
-            "crosses_confidence_band": int(verdict.confidence) >= int(self.min_confidence),
+            # The panel's own answer against the floor it ruled under, not a fresh
+            # comparison against whatever the floor happens to be now.
+            "confidence_floor": int(verdict.confidence_floor),
+            "crosses_confidence_band": bool(verdict.clears_floor),
         }
 
     @gl.public.view
@@ -1106,10 +1204,22 @@ class OmbudsCourt(gl.Contract):
                 "reason": "The verdict upheld the denial, so there is nothing to advance against.",
                 "band": 0,
             }
-        if int(verdict.confidence) < int(self.min_confidence):
+        if not bool(verdict.clears_floor):
+            # The panel's own answer, agreed by every validator against the floor as it
+            # stood when they ruled. Recomputing `confidence >= self.min_confidence` here
+            # read a mutable floor against a figure consensus only pinned to within
+            # CONFIDENCE_TOLERANCE, so moving the floor re-decided settled payouts.
             return {
                 "ok": False,
-                "reason": "The verdict sits below the confidence band the pool requires.",
+                "reason": "The panel found this verdict below the confidence band the pool requires.",
+                "band": int(verdict.recoverable_band),
+            }
+        if case.status in TERMINAL_STATUSES:
+            # The case is closed. An advance against it would be money paid out on a
+            # claim that no longer exists, and nothing later could recover it.
+            return {
+                "ok": False,
+                "reason": f"That case is closed ({case.status}).",
                 "band": int(verdict.recoverable_band),
             }
         if case.status in REVIEW_STATUSES:
@@ -1470,11 +1580,27 @@ class OmbudsCourt(gl.Contract):
         confidence = int(outcome["confidence"])
         round_number = int(case.panel_round)
 
+        # The payout predicate, decided once, here, by the panel that ruled. Every
+        # validator had to agree on this exact boolean against this exact floor before the
+        # transaction could be accepted, which is what makes it safe to read later.
+        clears_floor = confidence >= confidence_floor
+
         # Two fingerprints, and the difference between them is what makes an appeal
-        # settleable. `ruling` covers what was decided. `digest` is `ruling` plus the
-        # round it was decided in, which is the right identity for a single
-        # adjudication but the wrong thing to ask "did the second panel change its
-        # mind" with, because the round number guarantees it always did.
+        # settleable.
+        #
+        # `ruling_digest` is the DECISION and nothing else: the call, the ground, the
+        # clause, the band, whether it clears the payout floor, and the document the
+        # member filed. It deliberately leaves out the fingerprints of the insurer's own
+        # published pages. Those used to be in here, and because an appeal takes a second
+        # panel round in real time, any revision the insurer made to the bulletin in
+        # between moved the digest and awarded the bond as though the challenger had been
+        # proved right. The registry tracks bulletin revisions precisely because they
+        # happen. "Did the second panel decide differently" must not be answerable by
+        # "did the insurer edit a page".
+        #
+        # `digest` is the identity of this one adjudication, so it carries the round and
+        # the document fingerprints as well. That is the figure printed on the member's
+        # letter, and it should change when anything at all about the reading changed.
         ruling_fields = {
             "docket": docket,
             "plan_id": case.plan_id,
@@ -1482,14 +1608,15 @@ class OmbudsCourt(gl.Contract):
             "ground": ground,
             "clause_id": str(outcome["clause_id"]),
             "recoverable_band": band,
-            "bulletin_digest": str(outcome["bulletin_digest"]),
-            "cms_digest": str(outcome["cms_digest"]),
+            "clears_floor": clears_floor,
             "evidence_sha256": case.evidence_sha256,
         }
         ruling_digest = _digest(json.dumps(ruling_fields, sort_keys=True))
 
         stamped_fields = dict(ruling_fields)
         stamped_fields["panel_round"] = round_number
+        stamped_fields["bulletin_digest"] = str(outcome["bulletin_digest"])
+        stamped_fields["cms_digest"] = str(outcome["cms_digest"])
         digest_payload = json.dumps(stamped_fields, sort_keys=True)
 
         # Read the outgoing verdict into plain locals FIRST. `previous` is a view onto the
@@ -1517,6 +1644,8 @@ class OmbudsCourt(gl.Contract):
             adjudicated_at=stamp,
             panel_round=u256(round_number),
             ruling_digest=ruling_digest,
+            confidence_floor=u256(confidence_floor),
+            clears_floor=clears_floor,
         )
 
         if not had_verdict:
@@ -1564,7 +1693,8 @@ class OmbudsCourt(gl.Contract):
             "recoverable_band": band,
             "recoverable_band_label": band_label(band),
             "confidence": confidence,
-            "crosses_confidence_band": confidence >= int(self.min_confidence),
+            "confidence_floor": confidence_floor,
+            "crosses_confidence_band": clears_floor,
             "digest": _digest(digest_payload),
             "ruling_digest": ruling_digest,
             "panel_round": round_number,
@@ -1596,7 +1726,7 @@ class OmbudsCourt(gl.Contract):
                 f"{ERROR_EXPECTED} the last review of '{docket}' has not been resolved yet, "
                 "so its bond is still held"
             )
-        if entry_status in ("SETTLED", "REJECTED"):
+        if entry_status in TERMINAL_STATUSES:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} '{docket}' is closed")
         # Belt and braces. Nothing should reach here holding a bond, and if anything
         # ever does, taking a second one would strand the first.
@@ -1751,6 +1881,16 @@ class OmbudsCourt(gl.Contract):
             raise gl.vm.UserError(
                 f"{ERROR_EXPECTED} '{docket}' has an open review and cannot be advanced against"
             )
+        if entry_status in TERMINAL_STATUSES:
+            # The same second lock, for the same reason. Without it this method walked a
+            # SETTLED case back to ADVANCED and the status counters went with it.
+            raise gl.vm.UserError(
+                f"{ERROR_EXPECTED} '{docket}' is {entry_status} and cannot be advanced against"
+            )
+        if entry_status == "FILED":
+            raise gl.vm.UserError(
+                f"{ERROR_EXPECTED} '{docket}' has no verdict, so there is nothing to advance against"
+            )
         case.advanced_atto = u256(amount)
         self._bump_status(entry_status, -1)
         case.status = "ADVANCED"
@@ -1766,7 +1906,7 @@ class OmbudsCourt(gl.Contract):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} only the court or the pool may settle a case")
         case = self._case_or_raise(docket)
         entry_status = str(case.status)
-        if entry_status in ("SETTLED", "REJECTED"):
+        if entry_status in TERMINAL_STATUSES:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} '{docket}' is already closed")
         if entry_status == "FILED":
             raise gl.vm.UserError(f"{ERROR_EXPECTED} '{docket}' has not been adjudicated")
@@ -1795,7 +1935,7 @@ class OmbudsCourt(gl.Contract):
         self._assert_owner()
         case = self._case_or_raise(docket)
         entry_status = str(case.status)
-        if entry_status in ("SETTLED", "REJECTED"):
+        if entry_status in TERMINAL_STATUSES:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} '{docket}' is already closed")
         if reason.strip() == "":
             raise gl.vm.UserError(f"{ERROR_EXPECTED} a rejection needs a stated reason")

@@ -35,7 +35,7 @@ def test_registers_a_rule_and_reads_it_back(registry):
     assert rule["retired"] is False
     assert rule["content_hash"] == ""
     assert rule["refresh_count"] == 0
-    assert "Medically Necessary" in rule["clause_sections"]
+    assert "Medical Necessity" in rule["clause_sections"]
     assert len(rule["clause_sections"]) == 5
 
 

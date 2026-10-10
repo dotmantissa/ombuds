@@ -36,10 +36,10 @@ CMS_100_1 = "https://api.coverage.cms.gov/v1/data/ncd?ncdid=57&ncdver=5"
 AETNA_SECTIONS = "|".join(
     [
         "Scope of Policy",
-        "Medically Necessary",
+        "Medical Necessity",
         "Experimental, Investigational, or Unproven",
-        "Policy Limitations and Exclusions",
-        "Applicable CPT / HCPCS / ICD-10 Codes",
+        "Related Policies",
+        "Background",
     ]
 )
 

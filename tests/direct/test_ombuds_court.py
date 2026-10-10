@@ -12,6 +12,7 @@ import pytest
 
 from conftest import (
     AETNA_0157,
+    section_body as _section_text,
     ATTO,
     CLEAN_RATIONALE,
     CMS_100_1,
@@ -236,8 +237,8 @@ def test_adjudicates_against_the_real_bulletin(
     assert out["overturn_recommended"] is True
     assert out["ground"] == "MEDICAL_NECESSITY"
     # clause_id is bulletin number plus a slug of a section the registry declared.
-    assert out["clause_id"] == "0157#medically-necessary"
-    assert out["clause_section"] == "Medically Necessary"
+    assert out["clause_id"] == "0157#medical-necessity"
+    assert out["clause_section"] == "Medical Necessity"
     # $4,200 sits in the band that runs from two thousand to seven and a half thousand.
     assert out["recoverable_band"] == 2
     assert out["recoverable_band_label"] == "$2,000 to $7,500"
@@ -267,7 +268,7 @@ def test_citations_are_built_from_the_documents_not_from_the_model(
     assert AETNA_0157 in urls
     assert CMS_100_1 in urls
     bulletin = next(c for c in citations if c["url"] == AETNA_0157)
-    assert bulletin["locator"] == "Medically Necessary"
+    assert bulletin["locator"] == "Medical Necessity"
     assert len(bulletin["digest"]) == 64
     assert "Aetna clinical policy bulletin 0157" in bulletin["source"]
 
@@ -357,7 +358,7 @@ def test_a_fabricated_quote_is_refused(
         ),
     )
 
-    with direct_vm.expect_revert("citation was fabricated"):
+    with direct_vm.expect_revert("does not appear in the section it was filed under"):
         court.adjudicate(docket)
 
 
@@ -484,16 +485,22 @@ def test_a_validator_that_picks_a_different_ground_disagrees(
 def test_a_validator_that_cites_a_different_clause_disagrees(
     court, direct_vm, direct_alice, aetna_0157, cms_100_1
 ):
-    """clause_id is the clamp, and it is compared exactly."""
+    """clause_id is the clamp, and it is compared exactly.
+
+    The second reader cites a different section of the same bulletin, and quotes from
+    that section so its own run is internally sound. The disagreement therefore comes
+    from the clause comparison itself and not from a refusal on the way to it.
+    """
     direct_vm.sender = direct_alice
     quote = real_quote(aetna_0157)
     _adjudicated(court, direct_vm, aetna_0157, cms_100_1, quote=quote)
 
+    other = "Experimental, Investigational, or Unproven"
+    other_quote = real_quote(aetna_0157, section=other)
+    assert other_quote != quote
+
     direct_vm.clear_mocks()
-    arm(
-        direct_vm, aetna_0157, cms_100_1,
-        verdict_json(quote, section="Experimental, Investigational, or Unproven"),
-    )
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(other_quote, section=other))
     assert direct_vm.run_validator() is False
 
 
@@ -1572,3 +1579,234 @@ def test_a_relayed_bond_withdrawal_refuses_the_zero_address(court, direct_vm, di
     direct_vm.sender = direct_alice
     with direct_vm.expect_revert("must not be the zero address"):
         court.withdraw_bond_for("0x" + "0" * 40)
+
+
+# ------------------------------------------- what the pool is allowed to be told, and when
+#
+# The advance gate used to look at open reviews and at whether an advance had already
+# been made, and stop. SETTLED and REJECTED were absent from it, so the pool would pay
+# real capital against a case the court had already closed, including one it had rejected
+# as never having been fileable, and note_advance then walked that case back to ADVANCED.
+
+
+def test_a_settled_case_cannot_be_advanced_against(
+    court, direct_vm, direct_owner, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+    assert court.is_advanceable(docket)["ok"] is True
+
+    direct_vm.sender = direct_owner
+    court.mark_settled(docket, str(9_000 * ATTO))
+
+    gate = court.is_advanceable(docket)
+    assert gate["ok"] is False
+    assert "closed" in gate["reason"]
+
+
+def test_a_rejected_case_cannot_be_advanced_against(
+    court, direct_vm, direct_owner, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    direct_vm.sender = direct_owner
+    court.reject_case(docket, "filed against the wrong plan")
+
+    gate = court.is_advanceable(docket)
+    assert gate["ok"] is False
+    assert "closed" in gate["reason"]
+
+
+def test_note_advance_refuses_to_reopen_a_closed_case(
+    court, direct_vm, direct_owner, direct_alice, direct_bob, aetna_0157, cms_100_1
+):
+    """The second lock. The gate says no, and calling straight through says no too."""
+    direct_vm.sender = direct_alice
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    direct_vm.sender = direct_owner
+    court.set_pool(str(direct_bob))
+    court.mark_settled(docket, str(9_000 * ATTO))
+
+    direct_vm.sender = direct_bob
+    with direct_vm.expect_revert("cannot be advanced against"):
+        court.note_advance(docket, str(2 * ATTO))
+    assert court.get_case(docket)["status"] == "SETTLED"
+
+
+def test_note_advance_refuses_a_case_with_no_verdict(
+    court, direct_vm, direct_owner, direct_alice, direct_bob
+):
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court)
+
+    direct_vm.sender = direct_owner
+    court.set_pool(str(direct_bob))
+
+    direct_vm.sender = direct_bob
+    with direct_vm.expect_revert("nothing to advance against"):
+        court.note_advance(docket, str(2 * ATTO))
+
+
+# ------------------------------------------------ the payout predicate, settled once
+#
+# `confidence` is only bound to within CONFIDENCE_TOLERANCE, so it is a judgement figure
+# and not a number two nodes agree on exactly. The gate used to recompute
+# `confidence >= self.min_confidence` at advance time against a floor the owner can move,
+# which meant a settled payout could be re-decided from a figure consensus never pinned.
+
+
+def test_the_payout_gate_is_the_panels_own_answer_not_a_fresh_comparison(
+    court, direct_vm, direct_owner, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    quote = real_quote(aetna_0157)
+    docket = _adjudicated(
+        court, direct_vm, aetna_0157, cms_100_1, answer=verdict_json(quote, confidence=95)
+    )
+
+    verdict = court.get_verdict(docket)
+    assert int(verdict["confidence"]) == 95
+    assert int(verdict["confidence_floor"]) == 70
+    assert verdict["crosses_confidence_band"] is True
+    assert court.is_advanceable(docket)["ok"] is True
+
+    # Moving the floor afterwards cannot unmake a decision the panel already agreed.
+    direct_vm.sender = direct_owner
+    court.set_min_confidence(100)
+    assert court.get_verdict(docket)["crosses_confidence_band"] is True
+    assert court.is_advanceable(docket)["ok"] is True
+
+    # And lowering it cannot release a payout the panel refused either.
+    court.set_min_confidence(1)
+    assert int(court.get_verdict(docket)["confidence_floor"]) == 70
+
+
+def test_a_verdict_below_the_floor_stays_below_it(
+    court, direct_vm, direct_owner, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    quote = real_quote(aetna_0157)
+    docket = _adjudicated(
+        court, direct_vm, aetna_0157, cms_100_1, answer=verdict_json(quote, confidence=40)
+    )
+    verdict = court.get_verdict(docket)
+    assert verdict["crosses_confidence_band"] is False
+    gate = court.is_advanceable(docket)
+    assert gate["ok"] is False
+    assert "confidence band" in gate["reason"]
+
+    direct_vm.sender = direct_owner
+    court.set_min_confidence(10)
+    assert court.is_advanceable(docket)["ok"] is False
+
+
+# ------------------------------------------------ a citation is bound to where it came from
+
+
+def test_a_quote_from_another_section_is_refused(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    """The gap this closes.
+
+    A validator accepted an exclusion lifted from Scope of Policy filed under Medical
+    Necessity on a verdict that overturned a denial, because the binding asked only
+    whether the sentence was somewhere in the bulletin. The member's letter prints the
+    section and the sentence together, so that is a citation which fails the moment
+    anybody looks it up.
+    """
+    direct_vm.sender = direct_alice
+    _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+
+    elsewhere = real_quote(aetna_0157, section="Scope of Policy")
+    assert elsewhere in policy_text(aetna_0157)
+    assert elsewhere not in _section_text(aetna_0157, "Medical Necessity")
+
+    lifted = _tampered(direct_vm, "clause_quote", elsewhere)
+    assert direct_vm.run_validator(leader_result=lifted) is False
+
+
+def test_the_committed_quote_is_verbatim_in_the_section_it_cites(
+    court, direct_vm, direct_alice, aetna_0157, cms_100_1
+):
+    direct_vm.sender = direct_alice
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+    verdict = court.get_verdict(docket)
+    body = _section_text(aetna_0157, verdict["clause_section"])
+    assert body != ""
+    assert verdict["clause_quote"] in body
+
+
+# --------------------------------------- an appeal turns on the decision, not the document
+
+
+def test_a_revised_bulletin_does_not_award_the_bond_on_its_own(
+    court, direct_vm, direct_alice, direct_bob, aetna_0157, cms_100_1
+):
+    """ruling_digest covers the decision. It used to cover the document fingerprint too.
+
+    An appeal takes a second panel round in real time, and the registry tracks bulletin
+    revisions precisely because insurers make them. So any edit between rounds moved the
+    digest and returned the bond as though the challenger had been proved right, on a
+    second reading that decided exactly the same thing.
+    """
+    direct_vm.sender = direct_alice
+    quote = real_quote(aetna_0157)
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1, quote=quote)
+    first = court.get_verdict(docket)
+
+    direct_vm.sender = direct_bob
+    direct_vm.value = ATTO // 4
+    court.request_review(docket)
+    direct_vm.value = 0
+
+    edited = aetna_0157.replace(
+        b"because the peer-reviewed medical literature shows them to be either unsafe",
+        b"because the peer-reviewed medical literature as of 2026 shows them to be unsafe",
+        1,
+    )
+    assert edited != aetna_0157
+
+    direct_vm.clear_mocks()
+    arm(direct_vm, edited, cms_100_1, verdict_json(quote))
+    second = court.adjudicate(docket)
+
+    # Same decision on every field that decides anything.
+    assert bool(second["overturn_recommended"]) == bool(first["overturn_recommended"])
+    assert second["ground"] == first["ground"]
+    assert second["clause_id"] == first["clause_id"]
+    assert int(second["recoverable_band"]) == int(first["recoverable_band"])
+    # The document fingerprint moved, and the transaction digest moved with it.
+    assert court.get_verdict(docket)["bulletin_digest"] != first["bulletin_digest"]
+    assert second["digest"] != first["digest"]
+    # The ruling did not, so the bond stays with the court.
+    assert second["ruling_digest"] == first["ruling_digest"]
+
+    out = court.resolve_review(docket)
+    assert out["verdict_changed"] is False
+    assert out["bond_returned"] is False
+    assert int(court.bond_of(str(direct_bob))) == 0
+
+
+def test_a_second_panel_that_decides_differently_still_frees_the_bond(
+    court, direct_vm, direct_alice, direct_bob, aetna_0157, cms_100_1
+):
+    """The control. Narrowing the digest must not stop a real reversal paying out."""
+    direct_vm.sender = direct_alice
+    quote = real_quote(aetna_0157)
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1, quote=quote)
+
+    direct_vm.sender = direct_bob
+    direct_vm.value = ATTO // 4
+    court.request_review(docket)
+    direct_vm.value = 0
+
+    direct_vm.clear_mocks()
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(quote, overturn=False))
+    court.adjudicate(docket)
+
+    out = court.resolve_review(docket)
+    assert out["verdict_changed"] is True
+    assert out["bond_returned"] is True
+    assert int(court.bond_of(str(direct_bob))) == ATTO // 4

@@ -64,8 +64,12 @@ class Underwriter:
     last_deposit_at: str
     deposit_count: u256
     # Principal still working in the pool. Rises on a deposit, falls on a withdrawal that
-    # reaches past the fees owed, and is never derived from anything else. See withdraw().
+    # reaches past the fees owed, and falls on this position's share of a write off. It is
+    # never derived from anything else. See withdraw() and _absorb_loss().
     active_principal_atto: u256
+    # This position's share of every loss the pool has booked. Kept so a withdrawal limit
+    # can account for capital that is gone, and so the UI can show it.
+    loss_borne_atto: u256
 
 
 @allow_storage
@@ -265,6 +269,84 @@ class AdvancePool(gl.Contract):
                 total += self._active_principal(pos)
         return total
 
+    def _entitlement(self, position: Underwriter) -> int:
+        """Everything this position may still take out of the pool.
+
+        Deposits plus fees earned, less what has already been taken and less the losses
+        this position has borne. One definition, read by both position_of and withdraw,
+        so what the UI promises and what the contract allows cannot drift apart.
+        """
+        value = (
+            int(position.principal_atto)
+            + int(position.fees_earned_atto)
+            - int(position.withdrawn_atto)
+            - int(position.loss_borne_atto)
+        )
+        return value if value > 0 else 0
+
+    def _accrue_fees(self, fee: int) -> None:
+        """Credit a fee to underwriters in proportion to the capital that bore the risk."""
+        if fee <= 0:
+            return
+        total_active = self._total_active_principal()
+        if total_active <= 0:
+            return
+        for address in self.underwriter_list:
+            position = self.underwriters.get(address)
+            if position is None:
+                continue
+            cut = (fee * self._active_principal(position)) // total_active
+            if cut > 0:
+                position.fees_earned_atto = u256(int(position.fees_earned_atto) + cut)
+
+    def _absorb_loss(self, loss: int) -> None:
+        """Write a loss down against every open position, in proportion to its capital.
+
+        Losses used to be left to show up through _free_capital alone, which sounds
+        neutral and is not. `entitled` never shrank, so the first underwriter to withdraw
+        after a write off took their principal out whole and the loss landed entirely on
+        whoever was slowest: alice could take all fifty of her fifty GEN and leave bob
+        forty nine of his. Fees were already shared pro rata by active principal, so
+        sharing losses the same way is the only version of this that is consistent.
+
+        The write down reduces active principal, which is both the claim on capital and
+        the weight used for future fees. An underwriter who has taken a loss therefore
+        earns proportionately less afterwards, which is correct: they have less capital
+        at work.
+        """
+        if loss <= 0:
+            return
+        total_active = self._total_active_principal()
+        if total_active <= 0:
+            return
+        if loss > total_active:
+            loss = total_active
+
+        # Integer division leaves a remainder. It is carried, so the figures add up to the
+        # loss exactly rather than drifting by a few atto on every write off.
+        remaining = loss
+        addresses = [a for a in self.underwriter_list]
+        for index, address in enumerate(addresses):
+            position = self.underwriters.get(address)
+            if position is None:
+                continue
+            active = self._active_principal(position)
+            if active <= 0:
+                continue
+            if index == len(addresses) - 1:
+                share = remaining
+            else:
+                share = (loss * active) // total_active
+            if share > remaining:
+                share = remaining
+            if share > active:
+                share = active
+            position.active_principal_atto = u256(active - share)
+            position.loss_borne_atto = u256(int(position.loss_borne_atto) + share)
+            remaining -= share
+            if remaining <= 0:
+                break
+
     # ----------------------------------------------------------------------------- views
 
     @gl.public.view
@@ -313,6 +395,8 @@ class AdvancePool(gl.Contract):
                 "active_principal_atto": "0",
                 "withdrawn_atto": "0",
                 "fees_earned_atto": "0",
+                "loss_borne_atto": "0",
+                "withdrawable_atto": "0",
                 "deposit_count": 0,
                 "share_bps": 0,
                 "first_deposit_at": "",
@@ -326,6 +410,8 @@ class AdvancePool(gl.Contract):
             "active_principal_atto": str(active),
             "withdrawn_atto": str(int(record.withdrawn_atto)),
             "fees_earned_atto": str(int(record.fees_earned_atto)),
+            "loss_borne_atto": str(int(record.loss_borne_atto)),
+            "withdrawable_atto": str(self._entitlement(record)),
             "deposit_count": int(record.deposit_count),
             "share_bps": (active * BPS) // total_active if total_active > 0 else 0,
             "first_deposit_at": record.first_deposit_at,
@@ -465,6 +551,7 @@ class AdvancePool(gl.Contract):
                 last_deposit_at=stamp,
                 deposit_count=u256(1),
                 active_principal_atto=u256(amount),
+                loss_borne_atto=u256(0),
             )
             self.underwriter_list.append(address)
         else:
@@ -493,19 +580,20 @@ class AdvancePool(gl.Contract):
         if amount <= 0:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} the withdrawal must be above zero")
 
-        # Principal plus the fees this position earned, less whatever has already been
-        # taken out. A loss shows up through _free_capital, not by rewriting principal.
-        entitled = (
-            int(record.principal_atto)
-            + int(record.fees_earned_atto)
-            - int(record.withdrawn_atto)
-        )
-        if entitled < 0:
-            entitled = 0
+        # What this position may still take out: everything it put in, plus the fees it
+        # earned, less what it has already taken and less the losses it has borne.
+        #
+        # The last term is the new one. This used to be `principal + fees_earned -
+        # withdrawn`, which never shrank when the pool took a loss, and that made a write
+        # off a race: the first underwriter out took their principal whole and the slowest
+        # one carried the whole loss. Active principal now falls by this position's pro
+        # rata share of every write off, and so does this limit, so nobody can withdraw
+        # capital that no longer exists.
+        entitled = self._entitlement(record)
         if amount > entitled:
             raise gl.vm.UserError(
                 f"{ERROR_EXPECTED} {address} may withdraw at most {entitled} atto, "
-                "counting principal and fees earned"
+                "counting capital still at work and fees earned but not yet taken out"
             )
 
         free = self._free_capital()
@@ -625,19 +713,30 @@ class AdvancePool(gl.Contract):
 
         The pool takes its principal plus the agreed fee. Anything above that belongs to
         the member and is left claimable for them rather than swept into the pool.
+
+        Who may call this, and why it is not the member
+        -----------------------------------------------
+        Anybody may PAY. Nobody but the pool's settlement authority may DECLARE A
+        SETTLEMENT CLOSED, and the two used to be the same action.
+
+        The member is the party who received the advance. Letting them record the recovery
+        let them choose the figure that discharged it: one wei closed a one GEN advance and
+        booked the rest as an underwriter write off, and because closing resets
+        outstanding_atto the utilisation ceiling never re-bound, so the loop ran until the
+        pool was empty. Eight GEN left a test pool for eleven wei that way.
+
+        So a payment that does not cover principal plus fee no longer closes anything. It
+        is credited against the advance and the advance stays OUTSTANDING, which is the
+        honest description of a debt that is not yet paid. Only the owner, acting as the
+        settlement authority with the insurer's remittance in hand, may close an advance
+        short through settle_short, and that is an openly attributed decision with a stated
+        reason rather than a side effect of sending a transaction.
         """
         record = self.advances.get(docket)
         if record is None:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} nothing has been advanced against '{docket}'")
         if record.status != "OUTSTANDING":
             raise gl.vm.UserError(f"{ERROR_EXPECTED} '{docket}' is already {record.status}")
-
-        caller = _normalise_address(gl.message.sender_address)
-        is_owner = caller == _normalise_address(self.owner)
-        is_member = caller == _normalise_address(record.member)
-        is_underwriter = self.underwriters.get(caller) is not None
-        if not (is_owner or is_member or is_underwriter):
-            raise gl.vm.UserError(f"{ERROR_EXPECTED} caller is not authorised to record recovery")
 
         received = int(gl.message.value)
         if received <= 0:
@@ -646,31 +745,48 @@ class AdvancePool(gl.Contract):
         principal = int(record.amount_atto)
         fee = (principal * int(self.fee_bps)) // BPS
         owed_to_pool = principal + fee
-        if received < owed_to_pool:
-            owed_to_pool = received
-            fee = owed_to_pool - principal if owed_to_pool > principal else 0
 
-        # An insurer that pays less than the advance is a partial loss. It is booked as
-        # one rather than quietly left out of the equity figure.
-        shortfall = principal - owed_to_pool
-        if shortfall < 0:
-            shortfall = 0
+        # Everything paid against this docket so far, not just what arrived in this
+        # transaction. An insurer paying in instalments has to be able to finish.
+        credited = int(record.recovered_atto) + received
 
-        member_share = received - owed_to_pool
+        if credited < owed_to_pool:
+            # Not enough to discharge the advance. Credit it and leave the advance open.
+            record.recovered_atto = u256(credited)
+            self.total_recovered_atto = u256(int(self.total_recovered_atto) + received)
+            return {
+                "docket": docket,
+                "received_atto": str(received),
+                "credited_atto": str(credited),
+                "owed_atto": str(owed_to_pool),
+                "outstanding_atto": str(owed_to_pool - credited),
+                "to_pool_atto": str(received),
+                "fee_atto": "0",
+                "to_member_atto": "0",
+                "shortfall_atto": "0",
+                "status": "OUTSTANDING",
+                "closed_at": "",
+            }
+
+        # Fully discharged. The pool takes principal plus fee; the surplus is the
+        # member's and is held for them.
+        fee = owed_to_pool - principal
+        member_share = credited - owed_to_pool
+        # This transaction's share of what goes to the pool, since earlier instalments
+        # were already counted when they arrived.
+        to_pool_now = received - member_share
         stamp = _chain_stamp()
 
         record.status = "RECOVERED"
-        record.recovered_atto = u256(received)
+        record.recovered_atto = u256(credited)
         record.fee_atto = u256(fee)
         record.member_balance_atto = u256(member_share)
         record.closed_at = stamp
 
         held = int(self.outstanding_atto) - principal
         self.outstanding_atto = u256(held if held > 0 else 0)
-        self.total_recovered_atto = u256(int(self.total_recovered_atto) + owed_to_pool)
+        self.total_recovered_atto = u256(int(self.total_recovered_atto) + to_pool_now)
         self.total_fees_atto = u256(int(self.total_fees_atto) + fee)
-        if shortfall > 0:
-            self.total_written_off_atto = u256(int(self.total_written_off_atto) + shortfall)
 
         if member_share > 0:
             current = int(self.claimable_atto.get(record.member, u256(0)))
@@ -679,29 +795,83 @@ class AdvancePool(gl.Contract):
                 int(self.total_member_share_atto) + member_share
             )
 
-        # Fees accrue to underwriters in proportion to active principal (taking into account
-        # withdrawn principal), recorded for the UI.
-        total_active_principal = self._total_active_principal()
-        if fee > 0 and total_active_principal > 0:
-            for address in self.underwriter_list:
-                position = self.underwriters.get(address)
-                if position is None:
-                    continue
-                active = self._active_principal(position)
-                cut = (fee * active) // total_active_principal
-                if cut > 0:
-                    position.fees_earned_atto = u256(int(position.fees_earned_atto) + cut)
+        self._accrue_fees(fee)
 
         court = gl.get_contract_at(self.court)
-        court.emit(on="accepted").mark_settled(docket, str(received))
+        court.emit(on="accepted").mark_settled(docket, str(credited))
 
         return {
             "docket": docket,
             "received_atto": str(received),
-            "to_pool_atto": str(owed_to_pool),
+            "credited_atto": str(credited),
+            "owed_atto": str(owed_to_pool),
+            "to_pool_atto": str(to_pool_now),
             "fee_atto": str(fee),
             "to_member_atto": str(member_share),
+            "shortfall_atto": "0",
+            "status": "RECOVERED",
+            "closed_at": stamp,
+        }
+
+    @gl.public.write
+    def settle_short(self, docket: str, note: str) -> dict:
+        """Close an advance the insurer settled for less than it owed.
+
+        The owner is the pool's settlement authority: the party that holds the insurer's
+        remittance advice and can say "this is all that is coming". That is a judgement
+        about a document, so it is made by an accountable address with a stated reason and
+        it is recorded as a write off, rather than being inferable from whoever happened
+        to send the smallest transaction.
+
+        Whatever was already credited stays credited. The unpaid remainder is booked as a
+        loss against the underwriters, which is what it is.
+        """
+        self._assert_owner()
+        record = self.advances.get(docket)
+        if record is None:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} nothing has been advanced against '{docket}'")
+        if record.status != "OUTSTANDING":
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} '{docket}' is already {record.status}")
+        if note.strip() == "":
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} a short settlement needs a stated reason")
+
+        principal = int(record.amount_atto)
+        credited = int(record.recovered_atto)
+        fee = (principal * int(self.fee_bps)) // BPS
+        if credited >= principal + fee:
+            raise gl.vm.UserError(
+                f"{ERROR_EXPECTED} '{docket}' has been paid in full, so record_recovery "
+                "closes it rather than this"
+            )
+
+        # The pool keeps what arrived. A fee is only earned once principal is whole.
+        earned_fee = credited - principal if credited > principal else 0
+        shortfall = principal - credited if principal > credited else 0
+        stamp = _chain_stamp()
+
+        record.status = "RECOVERED"
+        record.fee_atto = u256(earned_fee)
+        record.member_balance_atto = u256(0)
+        record.closed_at = stamp
+
+        held = int(self.outstanding_atto) - principal
+        self.outstanding_atto = u256(held if held > 0 else 0)
+        self.total_fees_atto = u256(int(self.total_fees_atto) + earned_fee)
+        if shortfall > 0:
+            self.total_written_off_atto = u256(int(self.total_written_off_atto) + shortfall)
+            self._absorb_loss(shortfall)
+
+        self._accrue_fees(earned_fee)
+
+        court = gl.get_contract_at(self.court)
+        court.emit(on="accepted").mark_settled(docket, str(credited))
+
+        return {
+            "docket": docket,
+            "credited_atto": str(credited),
+            "fee_atto": str(earned_fee),
             "shortfall_atto": str(shortfall),
+            "note": note,
             "status": "RECOVERED",
             "closed_at": stamp,
         }
@@ -719,14 +889,20 @@ class AdvancePool(gl.Contract):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} a write off needs a stated reason")
 
         principal = int(record.amount_atto)
+        credited = int(record.recovered_atto)
+        loss = principal - credited if principal > credited else 0
         record.status = "WRITTEN_OFF"
         record.closed_at = _chain_stamp()
         held = int(self.outstanding_atto) - principal
         self.outstanding_atto = u256(held if held > 0 else 0)
-        self.total_written_off_atto = u256(int(self.total_written_off_atto) + principal)
+        self.total_written_off_atto = u256(int(self.total_written_off_atto) + loss)
+        # Share the loss out now, pro rata by capital at work, rather than leaving it to
+        # fall on whoever withdraws last.
+        self._absorb_loss(loss)
         return {
             "docket": docket,
-            "written_off_atto": str(principal),
+            "written_off_atto": str(loss),
+            "credited_atto": str(credited),
             "note": note,
             "total_written_off_atto": str(int(self.total_written_off_atto)),
             "claimable_to_members_atto": str(int(self.total_member_share_atto)),

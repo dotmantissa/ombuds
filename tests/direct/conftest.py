@@ -33,7 +33,13 @@ CMS_100_1 = "https://api.coverage.cms.gov/v1/data/ncd?ncdid=57&ncdver=5"
 CMS_240_4 = "https://api.coverage.cms.gov/v1/data/ncd?ncdid=226&ncdver=3"
 
 # Section headings the captured Aetna pages actually publish.
-AETNA_SECTIONS = "Scope of Policy|Medically Necessary|Experimental, Investigational, or Unproven|Policy Limitations and Exclusions|Applicable CPT / HCPCS / ICD-10 Codes"
+# Section headings the captured Aetna pages actually publish, verified against the
+# fixtures. "Medically Necessary" and "Policy Limitations and Exclusions" were declared
+# here for a long time and appear in neither document: the real heading is "Medical
+# Necessity", and the exclusions one does not exist. _match_section resolved the
+# mismatch by slug substring, so clause_id was being built from a heading the bulletin
+# does not publish and no citation could be anchored to a section.
+AETNA_SECTIONS = "Scope of Policy|Medical Necessity|Experimental, Investigational, or Unproven|Related Policies|Background"
 
 
 def fixture_bytes(name: str) -> bytes:
@@ -100,11 +106,47 @@ def policy_text(html: bytes) -> str:
     return re.sub(r"\s+", " ", raw).strip()
 
 
-def real_quote(html: bytes, minimum: int = 60) -> str:
-    """Pull a genuine sentence out of a captured bulletin, long enough to be citable."""
+def section_body(html: bytes, section: str, allowed=None) -> str:
+    """Reproduce OmbudsCourt._section_body, so a test can quote the right section.
+
+    The contract binds clause_quote to the body of the section named in clause_section,
+    not to the document at large. A test that wants a citation the validator will accept
+    therefore has to slice the same way the contract does: longest body wins, because the
+    heading also appears once in the table of contents.
+    """
     text = policy_text(html)
-    start = text.find("Scope of Policy")
-    region = text[start:] if start >= 0 else text
+    sections = tuple(allowed if allowed is not None else AETNA_SECTIONS.split("|"))
+    best = ""
+    search_from = 0
+    while True:
+        start = text.find(section, search_from)
+        if start < 0:
+            break
+        body_from = start + len(section)
+        end = len(text)
+        for other in sections:
+            if other == section:
+                continue
+            where = text.find(other, body_from)
+            if where >= 0 and where < end:
+                end = where
+        body = text[body_from:end]
+        if len(body) > len(best):
+            best = body
+        search_from = body_from
+    return best
+
+
+def real_quote(html: bytes, minimum: int = 60, section: str = "Medical Necessity") -> str:
+    """Pull a genuine sentence out of the section a verdict will cite.
+
+    It has to come from that section specifically. The contract will refuse a quote that
+    sits anywhere else in the document, because clause_section and clause_quote are
+    stored and printed together and a reader follows the one to check the other.
+    """
+    region = section_body(html, section)
+    if region == "":
+        region = policy_text(html)
     for sentence in re.split(r"(?<=\.)\s+", region):
         cleaned = sentence.strip()
         if minimum <= len(cleaned) <= 400 and "Aetna" in cleaned:
@@ -121,7 +163,7 @@ def verdict_json(
     *,
     overturn: bool = True,
     ground: str = "MEDICAL_NECESSITY",
-    section: str = "Medically Necessary",
+    section: str = "Medical Necessity",
     recoverable_usd: int = 4200,
     confidence: int = 86,
     reasoning: str = (

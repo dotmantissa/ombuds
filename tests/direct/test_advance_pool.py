@@ -22,6 +22,7 @@ CAPS_CSV = ",".join(str(v) for v in BAND_CAPS)
 BPS = 10000
 
 DOCKET = "OMB-2026-000001"
+MEMBER = "0x" + "bb" * 20
 
 
 def court_stub(
@@ -328,24 +329,105 @@ def test_the_fee_accrues_to_underwriters_by_share(pool, direct_vm, direct_alice,
     assert bob_cut == (fee * 25) // 100
 
 
-def test_an_insurer_paying_less_than_the_advance_books_a_loss(pool, direct_vm, direct_alice):
+def test_a_part_payment_leaves_the_advance_open(pool, direct_vm, direct_alice):
+    """A debt that is half paid is not a debt that is settled.
+
+    This used to close the advance and write the remainder off, which is how a member
+    could discharge their own advance for a wei. A payment that does not cover principal
+    plus fee is now credited and the advance stays OUTSTANDING.
+    """
     fund(pool, direct_vm, direct_alice, 100 * ATTO)
     advance = int(pool.advance(DOCKET)["amount_atto"])
+    fee = (advance * 1200) // BPS
 
     short = advance // 2
     direct_vm.value = short
     out = pool.record_recovery(DOCKET)
     direct_vm.value = 0
 
+    assert out["status"] == "OUTSTANDING"
+    assert int(out["credited_atto"]) == short
+    assert int(out["owed_atto"]) == advance + fee
+    assert int(out["outstanding_atto"]) == advance + fee - short
+    assert int(out["shortfall_atto"]) == 0
+    assert pool.get_advance(DOCKET)["status"] == "OUTSTANDING"
+
+    # Nothing is written off, because nothing has been given up on yet.
+    stats = pool.pool_stats()
+    assert int(stats["total_written_off_atto"]) == 0
+    assert int(stats["outstanding_atto"]) == advance
+
+
+def test_an_insurer_can_pay_an_advance_off_in_instalments(pool, direct_vm, direct_alice):
+    """Credit accumulates across payments, and the last one closes it."""
+    fund(pool, direct_vm, direct_alice, 100 * ATTO)
+    advance = int(pool.advance(DOCKET)["amount_atto"])
+    fee = (advance * 1200) // BPS
+    owed = advance + fee
+
+    direct_vm.value = owed // 3
+    first = pool.record_recovery(DOCKET)
+    assert first["status"] == "OUTSTANDING"
+
+    direct_vm.value = owed - (owed // 3)
+    last = pool.record_recovery(DOCKET)
+    direct_vm.value = 0
+
+    assert last["status"] == "RECOVERED"
+    assert int(last["credited_atto"]) == owed
+    assert int(last["fee_atto"]) == fee
+    assert int(last["to_member_atto"]) == 0
+    assert int(pool.pool_stats()["outstanding_atto"]) == 0
+    assert int(pool.pool_stats()["total_written_off_atto"]) == 0
+
+
+def test_only_the_owner_may_close_an_advance_short(
+    pool, direct_vm, direct_owner, direct_alice
+):
+    """Giving up on a debt is a judgement about a document, so it is an owner decision.
+
+    Anybody may pay. Nobody but the settlement authority may declare that what arrived is
+    all that is coming, and the loss is shared pro rata when they do.
+    """
+    fund(pool, direct_vm, direct_alice, 100 * ATTO)
+    advance = int(pool.advance(DOCKET)["amount_atto"])
+
+    direct_vm.value = advance // 2
+    pool.record_recovery(DOCKET)
+    direct_vm.value = 0
+
+    direct_vm.sender = MEMBER
+    with direct_vm.expect_revert("caller is not the pool owner"):
+        pool.settle_short(DOCKET, "I would rather not pay the rest")
+
+    direct_vm.sender = direct_owner
+    with direct_vm.expect_revert("needs a stated reason"):
+        pool.settle_short(DOCKET, "   ")
+
+    out = pool.settle_short(DOCKET, "insurer remittance advice shows final payment")
+    assert out["status"] == "RECOVERED"
+    assert int(out["shortfall_atto"]) == advance - advance // 2
     assert int(out["fee_atto"]) == 0
-    assert int(out["to_member_atto"]) == 0
-    assert int(out["shortfall_atto"]) == advance - short
 
     stats = pool.pool_stats()
     assert int(stats["outstanding_atto"]) == 0
-    assert int(stats["total_written_off_atto"]) == advance - short
-    # Equity is down by exactly what was never recovered.
-    assert int(stats["total_value_governed_atto"]) == 100 * ATTO - (advance - short)
+    assert int(stats["total_written_off_atto"]) == advance - advance // 2
+    assert int(stats["total_value_governed_atto"]) == 100 * ATTO - (advance - advance // 2)
+
+
+def test_a_fully_paid_advance_cannot_be_closed_short(
+    pool, direct_vm, direct_owner, direct_alice
+):
+    fund(pool, direct_vm, direct_alice, 100 * ATTO)
+    advance = int(pool.advance(DOCKET)["amount_atto"])
+    fee = (advance * 1200) // BPS
+    direct_vm.value = advance + fee
+    pool.record_recovery(DOCKET)
+    direct_vm.value = 0
+
+    direct_vm.sender = direct_owner
+    with direct_vm.expect_revert("already RECOVERED"):
+        pool.settle_short(DOCKET, "trying it on")
 
 
 def test_a_recovery_against_an_unknown_docket_is_refused(pool, direct_vm):
@@ -364,20 +446,29 @@ def test_a_recovery_with_no_value_is_refused(pool, direct_vm, direct_alice):
 
 
 def test_a_docket_cannot_be_recovered_twice(pool, direct_vm, direct_alice):
+    """Once an advance is discharged in full it is closed for good."""
     fund(pool, direct_vm, direct_alice, 100 * ATTO)
     advance = int(pool.advance(DOCKET)["amount_atto"])
-    direct_vm.value = advance
-    pool.record_recovery(DOCKET)
+    fee = (advance * 1200) // BPS
+    direct_vm.value = advance + fee
+    assert pool.record_recovery(DOCKET)["status"] == "RECOVERED"
     with direct_vm.expect_revert("already RECOVERED"):
         pool.record_recovery(DOCKET)
     direct_vm.value = 0
 
 
 def test_a_recovery_tells_the_court_to_settle(make_pool, direct_vm, direct_alice):
+    """And only once the advance is actually discharged, not on a part payment."""
     pool, stub = make_pool()
     fund(pool, direct_vm, direct_alice, 100 * ATTO)
     advance = int(pool.advance(DOCKET)["amount_atto"])
-    direct_vm.value = advance
+    fee = (advance * 1200) // BPS
+
+    direct_vm.value = advance // 4
+    pool.record_recovery(DOCKET)
+    assert [c for c in stub.calls if c[0] == "mark_settled"] == []
+
+    direct_vm.value = advance + fee - advance // 4
     pool.record_recovery(DOCKET)
     direct_vm.value = 0
 
@@ -599,18 +690,39 @@ def test_claim_for_transfers_surplus_to_member(make_pool, direct_vm, direct_alic
     assert int(pool.claimable_of(member)) == 0
 
 
-def test_record_recovery_refuses_unauthorised_stranger(make_pool, direct_vm, direct_alice):
-    member = "0x" + "bb" * 20
-    stub = court_stub(filer=member)
-    pool, _ = make_pool(stub=stub)
+def test_a_stranger_may_pay_an_advance_off_but_cannot_discharge_it_short(
+    pool, direct_vm, direct_alice
+):
+    """Paying is open. Declaring the debt finished is not.
+
+    record_recovery used to gate on who the caller was and then trust the figure they
+    sent, which is the wrong way round: it let the member discharge their own advance for
+    a wei while refusing an honest payment from a third party. Anybody may now pay, and
+    the amount is what decides whether the advance closes.
+    """
+    install_stubs(direct_vm, court_stub(filer=MEMBER))
     fund(pool, direct_vm, direct_alice, 100 * ATTO)
     advance = int(pool.advance(DOCKET)["amount_atto"])
+    fee = (advance * 1200) // BPS
 
     stranger = "0x" + "99" * 20
     direct_vm.sender = stranger
-    direct_vm.value = advance
-    with direct_vm.expect_revert("caller is not authorised to record recovery"):
-        pool.record_recovery(DOCKET)
+    direct_vm.value = 1
+    out = pool.record_recovery(DOCKET)
+    direct_vm.value = 0
+    # One wei buys a credit of one wei, and nothing else.
+    assert out["status"] == "OUTSTANDING"
+    assert int(out["credited_atto"]) == 1
+    assert int(pool.pool_stats()["total_written_off_atto"]) == 0
+
+    # And they cannot write the rest off either.
+    with direct_vm.expect_revert("caller is not the pool owner"):
+        pool.settle_short(DOCKET, "close it please")
+
+    # Paying the whole thing does work, from anybody.
+    direct_vm.sender = stranger
+    direct_vm.value = advance + fee - 1
+    assert pool.record_recovery(DOCKET)["status"] == "RECOVERED"
     direct_vm.value = 0
 
 
@@ -914,17 +1026,33 @@ def test_the_member_may_settle_their_own_advance(
     assert pool.get_advance(DOCKET)["status"] == "RECOVERED"
 
 
-def test_a_stranger_still_cannot_settle_an_advance(pool, direct_vm, direct_alice, direct_bob):
-    """Normalising the comparison must not widen it."""
+def test_the_member_cannot_discharge_their_own_advance_cheaply(
+    pool, direct_vm, direct_alice, direct_bob
+):
+    """The drain this whole change exists to close.
+
+    The member received the advance. They used to be allowed to record its recovery AND
+    choose the figure, so one wei closed it and the underwriters absorbed the principal.
+    Settling also reset outstanding_atto, so the utilisation ceiling never re-bound and
+    the loop ran until the pool was empty: eight GEN for eleven wei.
+    """
     install_stubs(direct_vm, court_stub(filer=str(direct_bob).lower()))
-    fund(pool, direct_vm, direct_alice, 100 * ATTO)
+    fund(pool, direct_vm, direct_alice, 8 * ATTO)
     advance = int(pool.advance(DOCKET)["amount_atto"])
 
-    direct_vm.sender = "0x" + "99" * 20
-    direct_vm.value = advance
-    with direct_vm.expect_revert("caller is not authorised to record recovery"):
-        pool.record_recovery(DOCKET)
+    direct_vm.sender = direct_bob
+    direct_vm.value = 1
+    out = pool.record_recovery(DOCKET)
     direct_vm.value = 0
+
+    assert out["status"] == "OUTSTANDING"
+    assert int(pool.pool_stats()["total_written_off_atto"]) == 0
+    # The capital is still committed, so the ceiling still counts it.
+    assert int(pool.pool_stats()["outstanding_atto"]) == advance
+
+    # And the docket cannot be advanced against a second time either.
+    with direct_vm.expect_revert("already been advanced against"):
+        pool.advance(DOCKET)
 
 
 def test_a_position_reads_back_in_any_spelling(pool, direct_vm, direct_alice):
@@ -980,3 +1108,88 @@ def test_the_court_cannot_be_repointed_at_the_zero_address(pool, direct_vm, dire
     direct_vm.sender = direct_owner
     with direct_vm.expect_revert("must not be the zero address"):
         pool.set_court("0x" + "0" * 40)
+
+
+# ---------------------------------------------------- losses, and who actually bears them
+#
+# Fees were always shared pro rata by capital at work. Losses were not shared at all:
+# `entitled` was principal plus fees less withdrawals and never shrank, so the first
+# underwriter out after a write off took their principal whole and the slowest one
+# carried the lot. Alice could take all fifty of her fifty GEN and leave bob forty nine
+# of his. A write off now reduces each position's active principal by its share.
+
+
+def test_a_write_off_is_shared_pro_rata_by_capital_at_work(
+    pool, direct_vm, direct_owner, direct_alice, direct_bob
+):
+    fund(pool, direct_vm, direct_alice, 50 * ATTO)
+    fund(pool, direct_vm, direct_bob, 50 * ATTO)
+    advance = int(pool.advance(DOCKET)["amount_atto"])
+
+    direct_vm.sender = direct_owner
+    pool.write_off(DOCKET, "the insurer never paid")
+
+    half = advance // 2
+    for who in (direct_alice, direct_bob):
+        position = pool.position_of(str(who))
+        assert int(position["loss_borne_atto"]) == half
+        assert int(position["active_principal_atto"]) == 50 * ATTO - half
+        assert int(position["withdrawable_atto"]) == 50 * ATTO - half
+
+    assert int(pool.pool_stats()["total_written_off_atto"]) == advance
+
+
+def test_the_first_underwriter_out_cannot_leave_the_loss_behind(
+    pool, direct_vm, direct_owner, direct_alice, direct_bob
+):
+    """The race this closes. Alice withdrawing first must not make the loss bob's."""
+    fund(pool, direct_vm, direct_alice, 50 * ATTO)
+    fund(pool, direct_vm, direct_bob, 50 * ATTO)
+    advance = int(pool.advance(DOCKET)["amount_atto"])
+
+    direct_vm.sender = direct_owner
+    pool.write_off(DOCKET, "the insurer never paid")
+
+    half = advance // 2
+    direct_vm.sender = direct_alice
+    with direct_vm.expect_revert("may withdraw at most"):
+        pool.withdraw(str(50 * ATTO))
+    alice_out = int(pool.withdraw(str(50 * ATTO - half))["withdrawn_atto"])
+
+    # Bob can still take everything he is owed after the loss, which is the point.
+    direct_vm.sender = direct_bob
+    bob_out = int(pool.withdraw(str(50 * ATTO - half))["withdrawn_atto"])
+    assert alice_out == bob_out
+    assert alice_out + bob_out == 100 * ATTO - advance
+
+
+def test_a_loss_reduces_the_weight_a_position_carries_for_later_fees(
+    pool, direct_vm, direct_owner, direct_alice, direct_bob
+):
+    """An underwriter with less capital at work earns less of the next fee. Correctly."""
+    fund(pool, direct_vm, direct_alice, 90 * ATTO)
+    fund(pool, direct_vm, direct_bob, 10 * ATTO)
+
+    direct_vm.sender = direct_owner
+    first = int(pool.advance(DOCKET)["amount_atto"])
+    pool.write_off(DOCKET, "written off")
+
+    alice_active = int(pool.position_of(str(direct_alice))["active_principal_atto"])
+    bob_active = int(pool.position_of(str(direct_bob))["active_principal_atto"])
+    assert alice_active + bob_active == 100 * ATTO - first
+
+    second = "OMB-2026-000002"
+    advance = int(pool.advance(second)["amount_atto"])
+    fee = (advance * 1200) // BPS
+    direct_vm.sender = direct_alice
+    direct_vm.value = advance + fee
+    pool.record_recovery(second)
+    direct_vm.value = 0
+
+    total_active = alice_active + bob_active
+    assert int(pool.position_of(str(direct_alice))["fees_earned_atto"]) == (
+        fee * alice_active
+    ) // total_active
+    assert int(pool.position_of(str(direct_bob))["fees_earned_atto"]) == (
+        fee * bob_active
+    ) // total_active
