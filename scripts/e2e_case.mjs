@@ -43,30 +43,36 @@ if (flags.length > 0) {
   process.exit(1);
 }
 
-console.log('\n1. filing');
-await send(
-  client,
-  court,
-  'file_case',
-  [
-    'AETNA-COMMERCIAL-BARIATRIC_SURGERY',
-    'bariatric_surgery',
-    'TX',
-    '43644|43775',
-    'E66.01|Z68.41',
-    '50',
-    rationale,
-    '2026-04',
-    (12_000n * ATTO).toString(),
-    evidence,
-  ],
-  'file_case',
-);
+let docket = process.argv[2];
 
-const stats = await read(client, court, 'court_stats', []);
-const page = await read(client, court, 'docket_page', [0, 1]);
-const docket = page[0]?.docket;
-console.log(`   docket ${docket}, ${stats.case_count} case(s) on the docket`);
+if (!docket) {
+  console.log('\n1. filing');
+  await send(
+    client,
+    court,
+    'file_case',
+    [
+      'AETNA-COMMERCIAL-BARIATRIC_SURGERY',
+      'bariatric_surgery',
+      'TX',
+      '43644|43775',
+      'E66.01|Z68.41',
+      '50',
+      rationale,
+      '2026-04',
+      (12_000n * ATTO).toString(),
+      evidence,
+    ],
+    'file_case',
+  );
+
+  const stats = await read(client, court, 'court_stats', []);
+  const page = await read(client, court, 'docket_page', [0, 1]);
+  docket = page[0]?.docket;
+  console.log(`   docket ${docket}, ${stats.case_count} case(s) on the docket`);
+} else {
+  console.log(`\n1. using existing docket ${docket}`);
+}
 
 console.log('\n2. adjudicating. Every validator now re-fetches both sources and reruns the job.');
 console.log('   This takes a while on purpose.');
@@ -75,10 +81,15 @@ const started = Date.now();
 // calls on an adjudication, so an occasional split panel is normal, and rotating the panel
 // is the protocol's designed response to one. Without this a single disagreement ends the
 // transaction with nothing written.
-await send(client, court, 'adjudicate', [docket], 'adjudicate', 0n, {
-  consensusMaxRotations: 5,
-  waitRetries: 400,
-});
+const beforePanel = await read(client, court, 'get_case', [docket]);
+if (!beforePanel.has_verdict || beforePanel.status === 'UNDER_REVIEW') {
+  await send(client, court, 'adjudicate', [docket], 'adjudicate', 0n, {
+    consensusMaxRotations: 5,
+    waitRetries: 400,
+  });
+} else {
+  console.log('   keeping the existing verdict');
+}
 console.log(`   consensus reached in ${Math.round((Date.now() - started) / 1000)}s`);
 
 console.log('\n3. the verdict, read back off the contract');
@@ -108,7 +119,8 @@ if (gate.ok) {
   console.log('   quote:', quote.amount_atto, 'atto, limited by', quote.limited_by);
   await send(client, pool, 'advance', [docket], 'advance');
   const record = await read(client, pool, 'get_advance', [docket]);
-  console.log('   advanced', record.amount_atto, 'atto to', record.member, '| status', record.status);
+  console.log('   advance recorded', record.amount_atto, 'atto to', record.member, '| status', record.status);
+  console.log('   payout', JSON.stringify(await read(client, pool, 'get_payout', [record.payout_id])));
   const after = await read(client, pool, 'pool_stats', []);
   console.log('   pool TVG', after.total_value_governed_atto, '| outstanding', after.outstanding_atto);
   const caseAfter = await read(client, court, 'get_case', [docket]);

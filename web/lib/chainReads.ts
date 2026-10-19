@@ -49,6 +49,8 @@ export interface CourtStats {
 }
 
 export interface PoolStats {
+  utilisation_headroom_atto: string;
+  refunded_payouts_atto: string;
   total_value_governed_atto: string;
   free_capital_atto: string;
   outstanding_atto: string;

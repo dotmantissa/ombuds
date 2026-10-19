@@ -1,8 +1,10 @@
 'use client';
 
-import { PrivyProvider } from '@privy-io/react-auth';
+import { PrivyProvider, usePrivy } from '@privy-io/react-auth';
 import type { ReactNode } from 'react';
 
+import { SessionContext } from '@/lib/session';
+import { evmWalletAddress } from '@/lib/address';
 import { publicEnv } from '@/lib/env';
 
 /**
@@ -46,9 +48,16 @@ export function Providers({ children }: { children: ReactNode }) {
         },
       }}
     >
-      {children}
+      <SessionBridge>{children}</SessionBridge>
     </PrivyProvider>
   );
+}
+
+function SessionBridge({ children }: { children: ReactNode }) {
+  const privy = usePrivy();
+  return <SessionContext.Provider value={{ ready: privy.ready, authenticated: privy.authenticated,
+    memberAddress: evmWalletAddress(privy.user), email: privy.user?.email?.address ?? null,
+    getAccessToken: privy.getAccessToken, login: privy.login, logout: privy.logout }}>{children}</SessionContext.Provider>;
 }
 
 export default Providers;

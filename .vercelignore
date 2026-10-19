@@ -1,0 +1,16 @@
+.git/
+.claude/
+.venv/
+**/node_modules/
+**/.next/
+**/.next-e2e/
+**/.env*
+**/TASKS.md
+**/[Aa][Gg][Ee][Nn][Tt].[Mm][Dd]
+**/[Aa][Gg][Ee][Nn][Tt][Ss].[Mm][Dd]
+**/*.log
+**/test-results/
+**/playwright-report/
+.pytest_cache/
+artifacts/
+deploy/.*.json

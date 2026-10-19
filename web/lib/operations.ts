@@ -47,8 +47,8 @@ export async function trackedWrite(
     address: params.address.toLowerCase(), method: params.functionName,
     args: params.args ?? [], value: String(params.value ?? 0n),
   }, (_k, v) => typeof v === 'bigint' ? v.toString() : v)).digest('hex');
-  const claim = await store.claim({ member_id: memberId, request_key: requestKey, fingerprint,
-    contract_address: params.address, method: params.functionName, docket, amount_atto: String(params.value ?? 0n) });
+  const claim = await store.claim({ member_id: memberId, request_key: `${params.address.toLowerCase()}:${requestKey}`, fingerprint,
+    contract_address: params.address.toLowerCase(), method: params.functionName, docket, amount_atto: String(params.value ?? 0n) });
   if (!claim.fresh) throw new ExistingOperation(claim.operation, claim.operation.fingerprint !== fingerprint);
   let hash: string | undefined;
   try {
@@ -56,7 +56,11 @@ export async function trackedWrite(
       hash = txHash;
       await store.update(claim.operation.id, 'PENDING', txHash);
     } });
-    await store.update(claim.operation.id, result.ok ? 'EXECUTED' : 'FAILED', result.txHash);
+    if (!['ACCEPTED', 'FINALIZED'].includes(result.status) || result.executionResult === 'UNKNOWN') {
+      await store.update(claim.operation.id, 'PENDING', result.txHash);
+      throw new ReceiptTimeoutError(result.txHash);
+    }
+    await store.update(claim.operation.id, result.ok ? (result.status === 'FINALIZED' ? 'FINALIZED' : 'EXECUTED') : 'FAILED', result.txHash);
     return result;
   } catch (error) {
     const txHash = error instanceof ReceiptTimeoutError ? error.txHash : hash;

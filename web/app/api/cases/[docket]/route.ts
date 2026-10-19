@@ -28,7 +28,7 @@ export async function GET(_req: Request, context: { params: Promise<{ docket: st
       args: [docket],
     });
   } catch {
-    return Response.json({ error: `No case is filed under ${docket}.` }, { status: 404 });
+    return Response.json({ error: 'The court could not return this case. Refresh to check its availability.' }, { status: 502 });
   }
 
   let verdict: Record<string, unknown> | null = null;

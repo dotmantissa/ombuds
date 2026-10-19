@@ -40,7 +40,7 @@ export default async function CasePage({ params, searchParams }: { params: Promi
   if (!DOCKET.test(docket)) notFound();
 
   const kase = await caseOnChain(docket);
-  if (kase === null) notFound();
+  if (kase === null) return <section className="mx-auto max-w-[1240px] px-4 py-12"><h1 className="display text-31">This case could not be read.</h1><p role="alert" className="mt-4 text-16 text-text-2">The court may be unavailable or this docket may not exist yet. Refresh to check again, or return to the public docket.</p><Link href="/docket" className="mt-5 inline-block text-signal-bright">Browse cases</Link></section>;
 
   const hasVerdict = kase.has_verdict === true;
   const [verdict, gate, quote] = await Promise.all([
@@ -197,8 +197,8 @@ export default async function CasePage({ params, searchParams }: { params: Promi
                 docket={docket}
                 hasVerdict
                 status={status}
-                advanceable={gate?.ok === true}
-                advanceReason={gate?.reason ?? ''}
+                advanceable={gate?.ok === true && quote?.eligible === true}
+                advanceReason={quote?.eligible === false ? quote.reason : gate?.reason ?? 'The advance quote is unavailable. Refresh to check again.'}
                 quoteAmountAtto={quote?.eligible === true ? quote.amount_atto : null}
                 quoteLimitedBy={quote?.limited_by ?? null}
                 panelRound={Number(kase.panel_round ?? 1)}

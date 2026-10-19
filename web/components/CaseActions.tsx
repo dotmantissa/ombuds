@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Banknote, Gavel, Scale, Stamp } from 'lucide-react';
 
@@ -66,6 +66,10 @@ export function CaseActions({
   const [note, setNote] = useState<string | null>(null);
   const [outlasted, setOutlasted] = useState<Action | null>(null);
   const [txHash, setTxHash] = useState<string | null>(null);
+
+  useEffect(() => {
+    setOutlasted(null); setNote(null); setTxHash(null);
+  }, [status, panelRound]);
 
   async function run(kind: Action) {
     setBusy(kind);
@@ -182,6 +186,8 @@ export function CaseActions({
             txHash={txHash}
             outlasted
           />
+          <button type="button" onClick={() => router.refresh()} className="mt-3 border border-line px-4 py-2 text-13">Refresh case status</button>
+          <a href="/account" className="ml-4 text-13 text-signal-bright">Check transaction history</a>
         </div>
       )}
 

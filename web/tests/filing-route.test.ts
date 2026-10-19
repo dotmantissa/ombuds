@@ -262,7 +262,7 @@ test('the case row is written against the authenticated member, not the payout a
   assert.equal(recorded.cases[0]?.memberId, 'member-1');
   assert.equal(recorded.cases[0]?.docket, 'OMB-2026-000042');
   assert.equal(recorded.cases[0]?.status, 'FILED');
-  assert.equal(recorded.snapshots.length, 1);
+  assert.equal(recorded.snapshots.length, 0, 'filing must not fabricate a source snapshot before validators fetch it');
 });
 
 /* ---------------------------------------------------------------------- the commitment */

@@ -1,3 +1,4 @@
+import { legacyPoolAddress } from '@/lib/legacyDeployment';
 import Link from 'next/link';
 import { AccountDashboard } from '@/components/AccountDashboard';
 import { FinancialHistory } from '@/components/FinancialHistory';
@@ -33,6 +34,7 @@ export default async function PoolPage({ searchParams }: { searchParams: Promise
 
   return (
     <section className="mx-auto max-w-[1240px] px-4 pb-20 pt-12">
+      {stats === null && <p role="alert" className="mb-6 text-14 text-wait">Pool figures are unavailable. Refresh before making a financial decision.</p>}
       <div className="rail">
         <div className="rail-main">
           <div className="seq set-type" style={{ ['--i' as string]: 0 }}>
@@ -64,16 +66,18 @@ export default async function PoolPage({ searchParams }: { searchParams: Promise
                 caption="Total value governed"
                 tone="signal"
               />
-              <Stat value={`${genOf(stats?.free_capital_atto)} GEN`} caption="Free to advance" />
+              <Stat value={`${genOf(stats?.free_capital_atto)} GEN`} caption="Liquid pool capital" />
               <Stat
                 value={`${genOf(stats?.outstanding_atto)} GEN`}
                 caption="Out with members, waiting on an insurer"
                 tone="wait"
               />
               <Stat
-                value={`${((stats?.utilisation_bps ?? 0) / 100).toFixed(1)}%`}
-                caption={`Utilisation, capped at ${((config?.max_utilisation_bps ?? 0) / 100).toFixed(0)}%`}
+                value={stats === null ? 'Unavailable' : `${(stats.utilisation_bps / 100).toFixed(1)}%`}
+                caption={config === null ? 'Utilisation · ceiling unavailable' : `Utilisation, capped at ${(config.max_utilisation_bps / 100).toFixed(0)}%`}
               />
+              <Stat value={stats === null ? 'Unavailable' : `${genOf((BigInt(stats.free_capital_atto) < BigInt(stats.utilisation_headroom_atto) ? BigInt(stats.free_capital_atto) : BigInt(stats.utilisation_headroom_atto)).toString())} GEN`} caption="Available for new advances" />
+              <Stat value={`${genOf(stats?.refunded_payouts_atto)} GEN`} caption="Returned payments reserved for retry" tone="wait" />
             </div>
 
             <FullRule />
@@ -196,6 +200,7 @@ export default async function PoolPage({ searchParams }: { searchParams: Promise
           </RailNote>
         </div>
       </div>
+      <Panel className="mt-8 p-6"><h2 className="text-18">Earlier pool positions</h2><p className="mt-3 text-14 text-text-2">This upgrade uses a new pool. Deposits and outstanding advances in the earlier pool remain there and are not included in these figures. Keep the earlier address when checking an existing position.</p><p className="mono mt-3 break-all text-12 text-text-3">Earlier pool: {legacyPoolAddress}</p><a href="https://github.com/dotmantissa/ombuds/blob/main/deployments/pre-milestone-f4ba79d.json" target="_blank" rel="noreferrer" className="mt-3 inline-block text-14 text-signal-bright">Inspect the earlier deployment record</a></Panel>
       <AccountDashboard poolOnly />
       <Panel className="mt-8 p-6"><h2 className="display mb-6 text-26">Pool transaction history</h2><FinancialHistory history={history} payouts={payouts} />
         <nav className="mt-5 flex justify-between text-14" aria-label="Pool history pages">{offset > 0 ? <Link className="text-signal-bright" href={`?offset=${Math.max(0, offset - 25)}`}>Previous</Link> : <span />}{Math.max(history?.total ?? 0, payouts?.total ?? 0) > offset + 25 && <Link className="text-signal-bright" href={`?offset=${offset + 25}`}>Next</Link>}</nav>

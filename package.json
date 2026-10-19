@@ -18,12 +18,21 @@
     "seed:registry": "node deploy/seed_registry.mjs",
     "sources:build": "python3 scripts/build_sources.py",
     "fixtures:check": "python3 scripts/capture_fixtures.py --check",
-    "test": "npm run lint:contracts && npm run test:contracts && npm run test:web",
-    "env:sync": "node -e \"const fs=require('fs');const keep=l=>!/^VERCEL_/.test(l);fs.writeFileSync('web/.env.local',fs.readFileSync('.env','utf8').split('\\n').filter(keep).join('\\n'),{mode:0o600});console.log('web/.env.local refreshed from .env')\""
+    "test": "npm run lint:contracts && npm run test:contracts && npm run test:web && npm run test:scripts",
+    "env:sync": "node -e \"const fs=require('fs');const keep=l=>!/^VERCEL_/.test(l);fs.writeFileSync('web/.env.local',fs.readFileSync('.env','utf8').split('\\n').filter(keep).join('\\n'),{mode:0o600});console.log('web/.env.local refreshed from .env')\"",
+    "test:localnet": "node scripts/test_localnet.mjs",
+    "test:e2e": "npm --prefix web run test:e2e",
+    "deploy:milestone": "node deploy/milestone.mjs",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build",
+    "test:scripts": "node --test tests/scripts/*.test.mjs",
+    "test:index": "npm --prefix web run test:index"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
     "genlayer-js": "^1.1.8",
     "undici": "^8.11.2"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.10"
   }
 }

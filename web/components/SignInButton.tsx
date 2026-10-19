@@ -1,6 +1,6 @@
 'use client';
 
-import { usePrivy } from '@privy-io/react-auth';
+import { useSession } from '@/lib/session';
 import { LogIn, LogOut } from 'lucide-react';
 
 import { ConsensusPip } from '@/components/ConsensusProgress';
@@ -8,7 +8,7 @@ import { publicEnv } from '@/lib/env';
 
 export function SignInButton() {
   const configured = publicEnv.privyAppId !== '';
-  const privy = usePrivy();
+  const privy = useSession();
 
   if (!configured) {
     return (
@@ -28,7 +28,7 @@ export function SignInButton() {
   }
 
   if (privy.authenticated) {
-    const email = privy.user?.email?.address ?? 'signed in';
+    const email = privy.email ?? 'signed in';
     return (
       <div className="flex items-center gap-2">
         <span className="mono hidden max-w-[16ch] truncate text-12 text-text-3 sm:inline" title={email}>

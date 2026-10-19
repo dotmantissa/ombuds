@@ -47,3 +47,11 @@ Thumbs.db
 deploy/.redeploy-state.json
 *.log
 npm-debug.log*
+
+# Local browser and simulator verification
+web/.next-e2e/
+web/test-results/
+web/playwright-report/
+deploy/.milestone-state.json
+deploy/.milestone-smoke.json
+deploy/.payout-check.json

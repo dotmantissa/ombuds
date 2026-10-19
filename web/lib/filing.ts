@@ -429,14 +429,9 @@ export async function fileCase(
       status: 'FILED',
     });
 
-    for (const url of record.source_urls) {
-      await deps.recordSourceSnapshot({
-        docket,
-        url,
-        kind: 'PLAN_BULLETIN',
-        contentSha256: ''.padEnd(64, '0'),
-      });
-    }
+    // Source snapshots belong to the actual validator fetch, never a placeholder
+    // hash created while filing. Per-round provenance is read from the court.
+
   }
 
   return Response.json({

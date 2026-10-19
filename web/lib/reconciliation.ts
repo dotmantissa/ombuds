@@ -1,5 +1,5 @@
 import type { GenLayerTransaction, TransactionHash } from 'genlayer-js/types';
-import { getTransaction, readExecutionOutcome, readLifecycleStatus } from './genlayer';
+import { getTransaction, readExecutionOutcome, readLifecycleStatus, readConsensusAccepted, advancePoolAddress, ombudsCourtAddress, planRegistryAddress } from './genlayer';
 import { insertCase, migrate, sql } from './db';
 import { operationStore, type Operation } from './operations';
 import { readDocket } from './filing';
@@ -9,14 +9,18 @@ import { isCaseStatus } from '@/types/ombuds';
 export function operationOutcome(receipt: GenLayerTransaction): string {
   const lifecycle = readLifecycleStatus(receipt);
   if (['ACCEPTED', 'FINALIZED'].includes(lifecycle)) {
-    return readExecutionOutcome(receipt).ok ? (lifecycle === 'FINALIZED' ? 'FINALIZED' : 'EXECUTED') : 'FAILED';
+    if (!readConsensusAccepted(receipt)) return 'FAILED';
+    const execution = readExecutionOutcome(receipt);
+    if (execution.executionResult === 'UNKNOWN') return 'PENDING';
+    return execution.ok ? (lifecycle === 'FINALIZED' ? 'FINALIZED' : 'EXECUTED') : 'FAILED';
   }
   return 'PENDING';
 }
 /** Re-reading receipts never signs a transaction. Interrupted filings are indexed from chain. */
 export async function memberOperations(memberId: string, offset = 0) {
   await migrate();
-  const rows = (await sql()`SELECT * FROM chain_operations WHERE member_id = ${memberId}
+  const currentContracts = [advancePoolAddress(), ombudsCourtAddress(), planRegistryAddress()].map((a) => a.toLowerCase());
+  const rows = (await sql()`SELECT * FROM chain_operations WHERE member_id = ${memberId} AND lower(contract_address) = ANY(${currentContracts}::text[])
     ORDER BY created_at DESC LIMIT 25 OFFSET ${offset}`) as Operation[];
   for (const row of rows.filter((r) => r.tx_hash && (['PENDING', 'EXECUTED'].includes(r.status) || (r.method === 'file_case' && !r.docket && r.status === 'FINALIZED'))).slice(0, 5)) {
     try {
@@ -39,7 +43,7 @@ export async function memberOperations(memberId: string, offset = 0) {
       }
     } catch { /* Keep unknown/pending visible. Transport failure is not transaction failure. */ }
   }
-  const counts = (await sql()`SELECT count(*)::int AS total FROM chain_operations WHERE member_id = ${memberId}`) as Array<{ total: number }>;
+  const counts = (await sql()`SELECT count(*)::int AS total FROM chain_operations WHERE member_id = ${memberId} AND lower(contract_address) = ANY(${currentContracts}::text[])`) as Array<{ total: number }>;
   return { total: counts[0]?.total ?? 0, items: rows.map(({ id, method, docket, amount_atto, tx_hash, status, created_at }) =>
     ({ id, method, docket, amount_atto, tx_hash, status, created_at })) };
 }

@@ -38,6 +38,8 @@ import {
   ExecutionResult,
   TransactionStatus,
   executionResultNumberToName,
+  transactionsStatusNumberToName,
+  transactionResultNumberToName,
 } from 'genlayer-js/types';
 import type {
   CalldataEncodable,
@@ -87,6 +89,9 @@ async function prepareNodeNetworking(): Promise<void> {
       /* webpackIgnore: true */ /* turbopackIgnore: true */ dnsSpecifier
     )) as typeof import('node:dns');
     dns.setDefaultResultOrder('ipv4first');
+    const netSpecifier = 'node:net';
+    const net = await import(/* webpackIgnore: true */ /* turbopackIgnore: true */ netSpecifier) as typeof import('node:net');
+    net.setDefaultAutoSelectFamily(false);
   } catch {
     // No node:dns here. Nothing to pin, and nothing worth failing a request over.
   }
@@ -246,7 +251,10 @@ function leaderReceipts(receipt: GenLayerTransaction): LeaderReceipt[] {
 function lastLeaderReceipt(
   receipt: GenLayerTransaction,
 ): LeaderReceipt | undefined {
-  const all = leaderReceipts(receipt);
+  const all = leaderReceipts(receipt).filter((r) => {
+    const mode = (r as unknown as Record<string, unknown>).mode;
+    return mode === undefined || mode === 'leader';
+  });
   return all.length > 0 ? all[all.length - 1] : undefined;
 }
 
@@ -294,15 +302,25 @@ export function readExecutionOutcome(
     };
   }
 
+  name = ({ SUCCESS: 'FINISHED_WITH_RETURN', ERROR: 'FINISHED_WITH_ERROR' } as Record<string, string>)[name] ?? name;
   const ok = name === ExecutionResult.FINISHED_WITH_RETURN && error === null;
   return { ok, executionResult: name, error };
+}
+
+/** Finalized consensus can still record a rejected leader. */
+export function readConsensusAccepted(receipt: GenLayerTransaction): boolean {
+  const raw = receipt as unknown as Record<string, unknown>;
+  const table = transactionResultNumberToName as Record<string, string>;
+  const result = receipt.resultName ?? raw.result_name ?? (receipt.result === undefined ? undefined : table[String(receipt.result)]);
+  return result === undefined || ['AGREE', 'MAJORITY_AGREE', 'SUCCESS'].includes(String(result));
 }
 
 /** The lifecycle status off a receipt, as a readable name. */
 export function readLifecycleStatus(receipt: GenLayerTransaction): string {
   if (receipt.statusName) return String(receipt.statusName);
-  if (typeof receipt.status === 'string') return receipt.status;
-  if (typeof receipt.status === 'number') return ({ 5: 'ACCEPTED', 7: 'FINALIZED' } as Record<number, string>)[receipt.status] ?? `status:${receipt.status}`;
+  const table = transactionsStatusNumberToName as Record<string, string>;
+  if (typeof receipt.status === 'string') return table[receipt.status] ?? receipt.status;
+  if (typeof receipt.status === 'number') return table[String(receipt.status)] ?? `status:${receipt.status}`;
   return 'UNKNOWN';
 }
 
@@ -353,7 +371,7 @@ export interface WriteResult {
  * the thing that gives up first, because then its error, and not ours, is what
  * the caller has to interpret.
  */
-export const WAIT_INTERVAL_MS = 3000;
+export const WAIT_INTERVAL_MS = 6000;
 export const WAIT_RETRIES = 100;
 export const WAIT_DEADLINE_MS = 255_000;
 
@@ -433,7 +451,7 @@ export async function writeContract(
   return {
     txHash,
     receipt,
-    ok: outcome.ok && ['ACCEPTED', 'FINALIZED'].includes(readLifecycleStatus(receipt)),
+    ok: outcome.ok && readConsensusAccepted(receipt) && ['ACCEPTED', 'FINALIZED'].includes(readLifecycleStatus(receipt)),
     status: readLifecycleStatus(receipt),
     executionResult: outcome.executionResult,
     error: outcome.error,

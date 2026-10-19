@@ -18,6 +18,7 @@ import path from 'node:path';
 import { neon } from '@neondatabase/serverless';
 
 import { requireEnv } from './env';
+import { ombudsCourtAddress, advancePoolAddress } from './genlayer';
 import type {
   CaseStatus,
   Citation,
@@ -47,12 +48,19 @@ export function sql(): SqlClient {
 /* ------------------------------------------------------------------ migration */
 
 let migrated = false;
+let migrationPromise: Promise<{ applied: number }> | null = null;
 
 /**
  * Apply schema.sql. Every statement is IF NOT EXISTS, so this is safe to call on every
  * cold start and is how the index gets created in the first place.
  */
 export async function migrate(): Promise<{ applied: number }> {
+  if (migrated) return { applied: 0 };
+  if (!migrationPromise) migrationPromise = applyMigration().catch((error) => { migrationPromise = null; throw error; });
+  return migrationPromise;
+}
+
+async function applyMigration(): Promise<{ applied: number }> {
   if (migrated) return { applied: 0 };
 
   const file = path.join(process.cwd(), 'lib', 'schema.sql');
@@ -65,11 +73,12 @@ export async function migrate(): Promise<{ applied: number }> {
     .filter((s) => s !== '' && !s.split(/\r?\n/).every((line) => line.trim().startsWith('--')));
 
   const client = sql();
-  let applied = 0;
-  for (const statement of statements) {
-    await client.query(statement);
-    applied += 1;
-  }
+  // Serialize concurrent cold starts and apply the additive schema atomically.
+  await client.transaction([
+    client.query("SELECT pg_advisory_xact_lock(hashtext('ombuds-schema-v2'))"),
+    ...statements.map((statement) => client.query(statement)),
+  ]);
+  const applied = statements.length;
   migrated = true;
   return { applied };
 }
@@ -154,22 +163,22 @@ export interface InsertCaseInput {
   status: CaseStatus;
 }
 
-export async function insertCase(input: InsertCaseInput): Promise<void> {
+export async function insertCase(input: InsertCaseInput, court = ombudsCourtAddress().toLowerCase()): Promise<void> {
   await migrate();
   await sql()`
-    INSERT INTO cases (
-      docket, member_id, plan_id, family_id, state,
+    INSERT INTO protocol_cases (
+      court_address, docket, member_id, plan_id, family_id, state,
       cpt_codes, icd10_codes, denial_reason_code, denial_rationale,
       service_month, disputed_amount_atto, evidence_sha256, chain_tx, status
     ) VALUES (
-      ${input.docket}, ${input.memberId}, ${input.planId}, ${input.familyId}, ${input.state},
+      ${court.toLowerCase()}, ${input.docket}, ${input.memberId}, ${input.planId}, ${input.familyId}, ${input.state},
       ${input.cptCodes}, ${input.icd10Codes}, ${input.denialReasonCode}, ${input.denialRationale},
       ${input.serviceMonth}, ${input.disputedAmountAtto.toString()}, ${input.evidenceSha256},
       ${input.chainTx}, ${input.status}
     )
-    ON CONFLICT (docket) DO UPDATE
+    ON CONFLICT (court_address, docket) DO UPDATE
       SET status = EXCLUDED.status,
-          chain_tx = COALESCE(EXCLUDED.chain_tx, cases.chain_tx),
+          chain_tx = COALESCE(EXCLUDED.chain_tx, protocol_cases.chain_tx),
           updated_at = now()
   `;
 }
@@ -181,11 +190,11 @@ export async function updateCaseStatus(
 ): Promise<void> {
   await migrate();
   await sql()`
-    UPDATE cases
+    UPDATE protocol_cases
        SET status = ${status},
            chain_tx = COALESCE(${chainTx}, chain_tx),
            updated_at = now()
-     WHERE docket = ${docket}
+     WHERE docket = ${docket} AND court_address = ${ombudsCourtAddress().toLowerCase()}
   `;
 }
 
@@ -219,24 +228,24 @@ const DOCKET_SELECT = `
   SELECT c.docket, c.filed_at, c.status, c.state, c.plan_id, c.family_id,
          c.cpt_codes, c.icd10_codes, c.disputed_amount_atto, c.chain_tx,
          v.recoverable_band, v.ground, v.overturn_recommended, v.confidence
-    FROM cases c
-    LEFT JOIN verdicts v ON v.docket = c.docket
+    FROM protocol_cases c
+    LEFT JOIN protocol_verdicts v ON v.docket = c.docket AND v.court_address = c.court_address
 `;
 
 export async function getCaseByDocket(docket: string): Promise<DocketRow | null> {
   await migrate();
-  const rows = (await sql().query(`${DOCKET_SELECT} WHERE c.docket = $1`, [
-    docket,
+  const rows = (await sql().query(`${DOCKET_SELECT} WHERE c.docket = $1 AND c.court_address = $2`, [
+    docket, ombudsCourtAddress().toLowerCase(),
   ])) as Record<string, unknown>[];
   const row = rows[0];
   return row === undefined ? null : mapDocketRow(row);
 }
 
-export async function listCasesForMember(memberId: string, limit = 50): Promise<DocketRow[]> {
+export async function listCasesForMember(memberId: string, limit = 50, offset = 0): Promise<DocketRow[]> {
   await migrate();
   const rows = (await sql().query(
-    `${DOCKET_SELECT} WHERE c.member_id = $1 ORDER BY c.filed_at DESC LIMIT $2`,
-    [memberId, Math.min(Math.max(limit, 1), 200)],
+    `${DOCKET_SELECT} WHERE c.member_id = $1 AND c.court_address = $2 ORDER BY c.filed_at DESC LIMIT $3 OFFSET $4`,
+    [memberId, ombudsCourtAddress().toLowerCase(), Math.min(Math.max(limit, 1), 200), Math.max(0, offset)],
   )) as Record<string, unknown>[];
   return rows.map(mapDocketRow);
 }
@@ -244,8 +253,8 @@ export async function listCasesForMember(memberId: string, limit = 50): Promise<
 export async function listPublicDocket(limit = 25, offset = 0): Promise<DocketRow[]> {
   await migrate();
   const rows = (await sql().query(
-    `${DOCKET_SELECT} ORDER BY c.filed_at DESC LIMIT $1 OFFSET $2`,
-    [Math.min(Math.max(limit, 1), 100), Math.max(offset, 0)],
+    `${DOCKET_SELECT} WHERE c.court_address = $1 ORDER BY c.filed_at DESC LIMIT $2 OFFSET $3`,
+    [ombudsCourtAddress().toLowerCase(), Math.min(Math.max(limit, 1), 100), Math.max(offset, 0)],
   )) as Record<string, unknown>[];
   return rows.map(mapDocketRow);
 }
@@ -256,16 +265,16 @@ export async function searchCases(q: string, limit = 25): Promise<DocketRow[]> {
   const needle = `%${q.trim().toLowerCase()}%`;
   const rows = (await sql().query(
     `${DOCKET_SELECT}
-      WHERE lower(c.docket) LIKE $1
+      WHERE c.court_address = $3 AND (lower(c.docket) LIKE $1
          OR lower(c.plan_id) LIKE $1
          OR lower(c.family_id) LIKE $1
          OR lower(c.denial_reason_code) LIKE $1
          OR lower(c.denial_rationale) LIKE $1
          OR EXISTS (SELECT 1 FROM unnest(c.cpt_codes) code WHERE lower(code) LIKE $1)
-         OR EXISTS (SELECT 1 FROM unnest(c.icd10_codes) code WHERE lower(code) LIKE $1)
+         OR EXISTS (SELECT 1 FROM unnest(c.icd10_codes) code WHERE lower(code) LIKE $1))
       ORDER BY c.filed_at DESC
       LIMIT $2`,
-    [needle, Math.min(Math.max(limit, 1), 100)],
+    [needle, Math.min(Math.max(limit, 1), 100), ombudsCourtAddress().toLowerCase()],
   )) as Record<string, unknown>[];
   return rows.map(mapDocketRow);
 }
@@ -291,16 +300,16 @@ export interface RecordVerdictInput {
 export async function recordVerdict(input: RecordVerdictInput): Promise<void> {
   await migrate();
   await sql()`
-    INSERT INTO verdicts (
-      docket, overturn_recommended, ground, clause_id, clause_section, clause_quote,
+    INSERT INTO protocol_verdicts (
+      court_address, docket, overturn_recommended, ground, clause_id, clause_section, clause_quote,
       recoverable_band, confidence, digest, citations, reasoning, tx_hash, panel_round
     ) VALUES (
-      ${input.docket}, ${input.overturnRecommended}, ${input.ground}, ${input.clauseId},
+      ${ombudsCourtAddress().toLowerCase()}, ${input.docket}, ${input.overturnRecommended}, ${input.ground}, ${input.clauseId},
       ${input.clauseSection}, ${input.clauseQuote}, ${input.recoverableBand},
       ${input.confidence}, ${input.digest}, ${JSON.stringify(input.citations)},
       ${input.reasoning}, ${input.txHash}, ${input.panelRound}
     )
-    ON CONFLICT (docket) DO UPDATE SET
+    ON CONFLICT (court_address, docket) DO UPDATE SET
       overturn_recommended = EXCLUDED.overturn_recommended,
       ground               = EXCLUDED.ground,
       clause_id            = EXCLUDED.clause_id,
@@ -328,8 +337,8 @@ export async function recordPoolEvent(input: {
 }): Promise<void> {
   await migrate();
   await sql()`
-    INSERT INTO pool_events (kind, actor, amount_atto, docket, tx_hash)
-    VALUES (${input.kind}, ${input.actor}, ${input.amountAtto.toString()}, ${input.docket}, ${input.txHash})
+    INSERT INTO pool_events (pool_address, kind, actor, amount_atto, docket, tx_hash)
+    VALUES (${advancePoolAddress().toLowerCase()}, ${input.kind}, ${input.actor}, ${input.amountAtto.toString()}, ${input.docket}, ${input.txHash})
   `;
 }
 
@@ -348,6 +357,7 @@ export async function listPoolEvents(limit = 25): Promise<
   const rows = (await sql()`
     SELECT id, kind, actor, amount_atto, docket, tx_hash, at
       FROM pool_events
+     WHERE pool_address = ${advancePoolAddress().toLowerCase()}
      ORDER BY at DESC
      LIMIT ${Math.min(Math.max(limit, 1), 100)}
   `) as Record<string, unknown>[];
@@ -370,8 +380,8 @@ export async function recordSourceSnapshot(input: {
 }): Promise<void> {
   await migrate();
   await sql()`
-    INSERT INTO source_snapshots (docket, url, kind, content_sha256)
-    VALUES (${input.docket}, ${input.url}, ${input.kind}, ${input.contentSha256})
+    INSERT INTO source_snapshots (court_address, docket, url, kind, content_sha256)
+    VALUES (${ombudsCourtAddress().toLowerCase()}, ${input.docket}, ${input.url}, ${input.kind}, ${input.contentSha256})
   `;
 }
 
@@ -384,18 +394,18 @@ export async function docketStats(): Promise<DocketStats> {
   const totals = (await client`
     SELECT count(*)::int AS total,
            COALESCE(sum(disputed_amount_atto), 0)::text AS disputed
-      FROM cases
+      FROM protocol_cases WHERE court_address = ${ombudsCourtAddress().toLowerCase()}
   `) as Record<string, unknown>[];
 
   const decided = (await client`
     SELECT
       count(*) FILTER (WHERE overturn_recommended)::int      AS overturned,
       count(*) FILTER (WHERE NOT overturn_recommended)::int  AS upheld
-      FROM verdicts
+      FROM protocol_verdicts WHERE court_address = ${ombudsCourtAddress().toLowerCase()}
   `) as Record<string, unknown>[];
 
   const grounds = (await client`
-    SELECT ground, count(*)::int AS n FROM verdicts GROUP BY ground
+    SELECT ground, count(*)::int AS n FROM protocol_verdicts WHERE court_address = ${ombudsCourtAddress().toLowerCase()} GROUP BY ground
   `) as Record<string, unknown>[];
 
   const total = Number(totals[0]?.total ?? 0);
@@ -438,6 +448,12 @@ export async function indexHealth(): Promise<{ ok: boolean; detail: string }> {
 /** Sponsorship is limited to the authenticated owner of the indexed case. */
 export async function memberOwnsCase(memberId: string, docket: string): Promise<boolean> {
   await migrate();
-  const rows = await sql()`SELECT docket FROM cases WHERE member_id = ${memberId} AND docket = ${docket}`;
+  const rows = await sql()`SELECT docket FROM protocol_cases WHERE member_id = ${memberId} AND docket = ${docket} AND court_address = ${ombudsCourtAddress().toLowerCase()}`;
   return Array.isArray(rows) && rows.length > 0;
+}
+
+export async function countCasesForMember(memberId: string): Promise<number> {
+  await migrate();
+  const rows = (await sql()`SELECT count(*)::int AS total FROM protocol_cases WHERE member_id = ${memberId} AND court_address = ${ombudsCourtAddress().toLowerCase()}`) as Array<{ total: number }>;
+  return rows[0]?.total ?? 0;
 }

@@ -113,3 +113,26 @@ CREATE TABLE IF NOT EXISTS chain_operations (
   UNIQUE(member_id, request_key)
 );
 CREATE INDEX IF NOT EXISTS operations_member_idx ON chain_operations(member_id, created_at DESC);
+
+
+-- Immutable redeployments can reuse a docket number. Keep the court in every
+-- index identity, so an old row can never authorize a different court's case.
+CREATE TABLE IF NOT EXISTS protocol_cases (
+  LIKE cases INCLUDING DEFAULTS,
+  court_address text NOT NULL,
+  PRIMARY KEY (court_address, docket),
+  FOREIGN KEY (member_id) REFERENCES members(id) ON DELETE SET NULL
+);
+CREATE TABLE IF NOT EXISTS protocol_verdicts (
+  LIKE verdicts INCLUDING DEFAULTS,
+  court_address text NOT NULL,
+  PRIMARY KEY (court_address, docket),
+  FOREIGN KEY (court_address, docket) REFERENCES protocol_cases(court_address, docket) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS protocol_cases_member_idx ON protocol_cases(court_address, member_id, filed_at DESC);
+CREATE INDEX IF NOT EXISTS protocol_cases_status_idx ON protocol_cases(court_address, status);
+-- Existing index rows did not store a source contract; do not invent one.
+INSERT INTO protocol_cases SELECT c.*, 'legacy:unscoped' FROM cases c ON CONFLICT DO NOTHING;
+INSERT INTO protocol_verdicts SELECT v.*, 'legacy:unscoped' FROM verdicts v ON CONFLICT DO NOTHING;
+ALTER TABLE pool_events ADD COLUMN IF NOT EXISTS pool_address text NOT NULL DEFAULT 'legacy:unscoped';
+ALTER TABLE source_snapshots ADD COLUMN IF NOT EXISTS court_address text NOT NULL DEFAULT 'legacy:unscoped';

@@ -8,13 +8,14 @@
 
 import dns from 'node:dns';
 dns.setDefaultResultOrder('ipv4first');
+import { setDefaultAutoSelectFamily } from 'node:net';
+setDefaultAutoSelectFamily(false);
 
-import { setGlobalDispatcher, Agent } from 'undici';
-setGlobalDispatcher(new Agent({ connect: { family: 4 } }));
 
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
+import { assertReceipt } from './receipts.mjs';
 import { chains, createClient, createAccount } from 'genlayer-js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -144,49 +145,27 @@ function votes(receipt) {
 export async function send(client, address, functionName, args, label, value = 0n, options = {}) {
   const { consensusMaxRotations, waitRetries = 200 } = options;
 
-  const txHash = await resilient(
-    () =>
-      client.writeContract({
+  const txHash = await client.writeContract({
         address,
         functionName,
         args,
         value,
         ...(consensusMaxRotations === undefined ? {} : { consensusMaxRotations }),
-      }),
-    `submitting ${functionName}`,
-  );
+      });
 
   const receipt = await resilient(
     () =>
       client.waitForTransactionReceipt({
         hash: txHash,
         status: 'ACCEPTED',
-        interval: 3000,
+        interval: 8000,
         retries: waitRetries,
       }),
     `waiting on ${functionName}`,
   );
 
-  const exec = receipt?.data?.execution_result ?? receipt?.execution_result;
-  const failed = exec && String(exec).toUpperCase().includes('ERROR');
-  const status = statusName(receipt);
-  const committed = COMMITTED_STATUSES.has(status);
-  const ok = !failed && committed;
-
-  if (label) console.log(`  ${ok ? 'ok' : 'FAILED'}  ${label}  ${txHash}`);
-
-  if (failed) {
-    const stderr = receipt?.data?.stderr || receipt?.stderr || '';
-    throw new Error(
-      `${functionName} was accepted but execution failed${stderr ? `: ${String(stderr).slice(0, 400)}` : ''}`,
-    );
-  }
-  if (!committed) {
-    throw new Error(
-      `${functionName} did not commit: the leader succeeded but the transaction ended ` +
-        `${status}, so no state changed. Validator votes ${votes(receipt)}.`,
-    );
-  }
+  assertReceipt(receipt, functionName);
+  if (label) console.log(`  ok  ${label}  ${txHash}`);
   return txHash;
 }
 

@@ -11,6 +11,7 @@ import type { NextConfig } from 'next';
  */
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  distDir: process.env.OMBUDS_E2E === '1' ? '.next-e2e' : '.next',
   poweredByHeader: false,
   serverExternalPackages: [
     'genlayer-js',

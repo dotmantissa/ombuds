@@ -1,9 +1,8 @@
 'use client';
 
-import { usePrivy } from '@privy-io/react-auth';
-import { useCallback, useMemo } from 'react';
+import { useSession } from './session';
+import { useCallback } from 'react';
 
-import { evmWalletAddress } from '@/lib/address';
 
 /**
  * Fetch with the Privy token attached.
@@ -22,9 +21,7 @@ export class ApiError extends Error {
 }
 
 export function useApi() {
-  const { getAccessToken, authenticated, user } = usePrivy();
-
-  const memberAddress = useMemo(() => evmWalletAddress(user), [user]);
+  const { getAccessToken, authenticated, memberAddress } = useSession();
 
   const call = useCallback(
     async <T>(path: string, init?: RequestInit): Promise<T> => {
@@ -41,7 +38,7 @@ export function useApi() {
       try {
         body = text === '' ? null : JSON.parse(text);
       } catch {
-        body = { error: text };
+        body = { error: 'The server could not return a readable response. Check transaction history before retrying.' };
       }
 
       if (!res.ok) {

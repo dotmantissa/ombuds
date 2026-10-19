@@ -35,7 +35,7 @@ export function AccountDashboard({ poolOnly = false }: { poolOnly?: boolean }) {
         <div className="mt-5 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
           <Stat value={formatGen(p?.principal_atto)} caption="Total deposited" /><Stat value={formatGen(p?.fees_earned_atto)} caption="Fees earned" tone="win" />
           <Stat value={formatGen(p?.loss_borne_atto)} caption="Losses borne" tone="loss" /><Stat value={formatGen(p?.withdrawn_atto)} caption="Withdrawals submitted" />
-          <Stat value={formatGen(p?.withdrawable_atto)} caption="Available to withdraw" /><Stat value={formatGen(p?.reserved_atto)} caption="Reserved against advances" tone="wait" />
+          <Stat value={formatGen(p?.withdrawable_atto)} caption="Available to withdraw" /><Stat value={formatGen(p?.deposit_count === 0 ? '0' : p?.reserved_atto)} caption="Reserved against advances" tone="wait" />
         </div><p className="mt-5 text-13 text-text-2">Withdrawals are limited by your remaining equity, capital reserved for advances you underwrote, and free pool cash. Reserved capital stays unavailable until settlement or write-off.</p>
         <p className="mt-3 text-13">Recovery surplus available: {formatGen(data.claimable ?? undefined)} · Returned appeal bonds: {formatGen(data.bond ?? undefined)}</p>
       </Panel>
