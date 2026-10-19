@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -15,7 +15,7 @@ import { useRouter } from 'next/navigation';
 import { ConsensusPip, ConsensusProgress } from '@/components/ConsensusProgress';
 import { Code, FullRule, Panel, RailNote } from '@/components/ui/primitives';
 import { normaliseAddress } from '@/lib/address';
-import { sha256Hex } from '@/lib/deident';
+import { sha256Hex, scrubText, extractCodes, normaliseDocumentText } from '@/lib/deident';
 import { useApi } from '@/lib/useApi';
 
 interface RuleOption {
@@ -71,6 +71,9 @@ export function FileWizard({
   const { call, authenticated, memberAddress } = useApi();
 
   const [step, setStep] = useState(0);
+  const [reviewed, setReviewed] = useState('');
+  const [originalDigest, setOriginalDigest] = useState<string | null>(null);
+  const filingKey = useRef({ signature: '', key: '' });
   const [letter, setLetter] = useState('');
   const [rationale, setRationale] = useState('');
   const [reasonCode, setReasonCode] = useState('');
@@ -100,10 +103,10 @@ export function FileWizard({
     setBusy(true);
     setError(null);
     try {
-      const result = await call<ScanResult>('/api/scan', {
-        method: 'POST',
-        body: JSON.stringify({ text: letter, serviceDate: serviceDate || undefined }),
-      });
+      const scrubbed = scrubText(letter);
+      const codes = extractCodes(scrubbed.clean);
+      const result: ScanResult = { clean: scrubbed.clean, redactions: scrubbed.redactions,
+        cptCodes: codes.cpt, icd10Codes: codes.icd10, chainFlags: [], chainReachable: false, accepted: true };
       setScan(result);
       if (rationale === '') {
         const firstSentence = result.clean
@@ -119,6 +122,29 @@ export function FileWizard({
     }
   }
 
+  const reviewSignature = JSON.stringify({ planId, stateCode, rationale: scrubText(rationale).clean,
+    reasonCode, serviceMonth: serviceDate.slice(0, 7), amount, payoutRecipient,
+    cpt: scan?.cptCodes, icd10: scan?.icd10Codes, letter, originalDigest });
+
+  async function readDocument(file: File | undefined) {
+    if (!file) return;
+    if (file.size > 2_000_000) { setError('Use a text document smaller than 2 MB.'); return; }
+    try {
+      if (!/\.(txt|html?|json|csv)$/i.test(file.name)) throw new Error('Paste extracted text for PDF or image documents. Text, HTML, JSON and CSV files can be read locally.');
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      let text = new TextDecoder().decode(bytes);
+      if (/\.json$/i.test(file.name)) {
+        const flatten = (value: unknown): string => typeof value === 'string' ? value : Array.isArray(value)
+          ? value.map(flatten).join('\n') : value && typeof value === 'object'
+            ? Object.entries(value).map(([k, v]) => `${k}: ${flatten(v)}`).join('\n') : String(value ?? '');
+        text = flatten(JSON.parse(text));
+      }
+      setLetter(normaliseDocumentText(text));
+      setOriginalDigest(await sha256Hex(bytes));
+      setScan(null); setError(null);
+    } catch (err) { setError(err instanceof Error ? err.message : 'The document could not be read locally.'); }
+  }
+
   async function submit() {
     if (rule === null) {
       setError('Pick a plan rule first.');
@@ -130,21 +156,26 @@ export function FileWizard({
       const sources = [rule.bulletinUrl, rule.cmsSourceUrl].filter((u) => u !== '');
       // The letter is hashed here, on this machine, with the same function the server
       // would use. The hash is the commitment; the letter itself never leaves.
-      const evidenceSha256 = await sha256Hex(letter);
+      const evidenceSha256 = originalDigest ?? await sha256Hex(letter);
+      if (reviewed !== reviewSignature) throw new Error('Review the sanitized record and confirm privacy before filing.');
+      if (filingKey.current.signature !== reviewSignature) {
+        filingKey.current = { signature: reviewSignature, key: crypto.randomUUID() };
+      }
       const result = await call<{
         docket: string | null;
         txHash: string;
         message?: string;
       }>('/api/cases', {
         method: 'POST',
+        headers: { 'idempotency-key': filingKey.current.key },
         body: JSON.stringify({
           planId: rule.planId,
           familyId: rule.familyId,
           state: stateCode,
-          letterText: letter,
-          denialRationale: rationale,
+          letterText: scrubText(rationale).clean,
+          denialRationale: scrubText(rationale).clean,
           denialReasonCode: reasonCode,
-          serviceDate,
+          serviceDate: serviceDate.slice(0, 7),
           disputedAmount: amount,
           sourceUrls: sources,
           cptCodes: scan?.cptCodes,
@@ -207,6 +238,11 @@ export function FileWizard({
 
       <div className="mt-6 rail">
         <div className="rail-main">
+          {step === 0 && <label className="mb-5 block text-14 text-text-2">Read a document on this device
+            <input type="file" accept=".txt,.html,.htm,.json,.csv" className="mt-2 block w-full" onChange={(e) => void readDocument(e.target.files?.[0])} />
+            <span className="mt-2 block text-13">For PDFs and images, paste the extracted text below. Review names and unusual identifiers manually.</span>
+          </label>}
+
           {/* ------------------------------------------------- step 1 */}
           {step === 0 && (
             <Panel className="p-6">
@@ -220,7 +256,7 @@ export function FileWizard({
               <textarea
                 id="letter"
                 value={letter}
-                onChange={(event) => setLetter(event.target.value)}
+                onChange={(event) => { setLetter(event.target.value); setOriginalDigest(null); setScan(null); }}
                 rows={14}
                 placeholder="Dear member, we have reviewed your claim for ..."
                 className="mono mt-4 w-full resize-y border border-line bg-raised p-3 text-13 text-text outline-none focus-visible:border-signal"
@@ -256,12 +292,12 @@ export function FileWizard({
                   <div>
                     <p className="text-16 text-text">
                       {scan.accepted
-                        ? 'Clean. Nothing identifying survived the scrub.'
+                        ? 'Automatic privacy scan completed. Review what remains.'
                         : 'Something identifying is still in there.'}
                     </p>
                     <p className="mt-1.5 text-14 text-text-2">
                       {scan.accepted
-                        ? 'The chain ran its own check over the same text and agreed. Two independent checks, both happy.'
+                        ? 'This scan ran on your device. Review names, identifiers and extracted codes before filing; the server and contract check the submitted record again.'
                         : `The contract flagged ${scan.chainFlags.join(', ')}. Edit the sentence below and scan again, because a filing with that in it would be refused.`}
                     </p>
                   </div>
@@ -285,7 +321,14 @@ export function FileWizard({
               </Panel>
 
               <Panel className="p-6">
-                <p className="mono text-12 text-text-3">Codes we found</p>
+                <p className="mono text-12 text-text-3">Review and correct extracted codes</p>
+                <label className="mt-3 block text-14">Procedure codes, separated by commas
+                  <input aria-label="Edit procedure codes" value={scan.cptCodes.join(', ')} onChange={(e) => setScan({ ...scan, cptCodes: e.target.value.split(',').map((c) => c.trim().toUpperCase()).filter(Boolean) })} className="mt-2 w-full border border-line bg-raised p-2" />
+                </label>
+                <label className="mt-3 block text-14">Diagnosis codes, separated by commas
+                  <input aria-label="Edit diagnosis codes" value={scan.icd10Codes.join(', ')} onChange={(e) => setScan({ ...scan, icd10Codes: e.target.value.split(',').map((c) => c.trim().toUpperCase()).filter(Boolean) })} className="mt-2 w-full border border-line bg-raised p-2" />
+                </label>
+                <details className="mt-4"><summary>Sanitized document preview</summary><pre className="mt-3 max-h-72 overflow-auto whitespace-pre-wrap text-13">{scan.clean}</pre></details>
                 <div className="mt-3 flex flex-col gap-3">
                   <div>
                     <p className="text-13 text-text-2">Procedure codes</p>
@@ -580,11 +623,15 @@ export function FileWizard({
                   <FullRule />
                   <div>
                     <dt className="mono text-12 text-text-3">Their rationale, verbatim</dt>
-                    <dd className="mt-1.5 text-14 text-text">{rationale}</dd>
+                    <dd className="mt-1.5 text-14 text-text">{scrubText(rationale).clean}</dd>
                   </div>
                 </dl>
               </Panel>
 
+              <label className="flex items-start gap-3 text-14 text-text-2">
+                <input type="checkbox" checked={reviewed === reviewSignature} onChange={(e) => setReviewed(e.target.checked ? reviewSignature : '')} />
+                I reviewed this sanitized record and corrected names, identifiers and extraction errors. I understand the record and payout address will be public.
+              </label>
               {!authenticated && (
                 <Panel className="border-wait p-5">
                   <p className="text-14 text-text">
@@ -611,7 +658,7 @@ export function FileWizard({
                 </button>
                 <button
                   type="button"
-                  disabled={!canFile || busy || !authenticated}
+                  disabled={!canFile || busy || !authenticated || reviewed !== reviewSignature}
                   onClick={() => void submit()}
                   className="inline-flex h-11 items-center gap-2 border border-signal bg-signal px-5 text-16 font-medium text-white disabled:cursor-not-allowed disabled:opacity-40"
                   style={{ borderRadius: 'var(--radius-hair)' }}
@@ -655,8 +702,7 @@ export function FileWizard({
                 have to pass.
               </RailNote>
               <RailNote title="Codes survive scrubbing">
-                A five digit procedure code and a five digit postcode look identical. The scrubber
-                knows the difference and leaves the codes alone.
+                A five digit procedure code and a five digit postcode look identical. Labels such as member ID override code-shaped values. Check that the surviving codes describe your procedure.
               </RailNote>
             </>
           )}

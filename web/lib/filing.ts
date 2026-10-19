@@ -19,7 +19,7 @@ import { trackedWrite, existingOperationResponse } from './operations';
 import { z } from 'zod';
 
 import { normaliseAddress, ZERO_ADDRESS } from './address';
-import { buildCaseRecord, sha256Hex } from './deident';
+import { buildCaseRecord, sha256Hex, PhiLeakError } from './deident';
 import { insertCase, listCasesForMember, recordSourceSnapshot } from './db';
 import {
   ombudsCourtAddress,
@@ -296,8 +296,8 @@ export async function fileCase(
   let input: FilingInput;
   try {
     input = FilingBody.parse(await req.json());
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : 'That form could not be read.';
+  } catch {
+    const detail = 'Review the required fields and their formats.';
     return Response.json(
       { error: `Some of those details did not look right. ${detail}` },
       { status: 400 },
@@ -342,9 +342,9 @@ export async function fileCase(
     return Response.json(
       {
         error:
-          err instanceof Error
+          err instanceof PhiLeakError
             ? `We stopped before sending anything. ${err.message}`
-            : 'We stopped before sending anything, because the letter still looked identifying.',
+            : 'We stopped before sending anything. Review the sanitized record, dates, codes and amount.',
       },
       { status: 422 },
     );
@@ -401,8 +401,7 @@ export async function fileCase(
     return Response.json(
       {
         error:
-          write.error ??
-          'The court refused that filing and did not say why. Nothing was charged and nothing was stored.',
+          'The court refused that filing. Review the sanitized record and registered rule before trying again.',
         status: write.status,
         txHash: write.txHash,
       },

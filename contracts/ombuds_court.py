@@ -150,6 +150,11 @@ _ICD10_RE = re.compile(r"^[A-TV-Z]\d{2}(?:\.[0-9A-Z]{1,4})?$")
 # The tripwire. If the client's de-identification let any of these through, the filing is
 # refused rather than written to a public chain.
 _PHI_PATTERNS = (
+    ("NAME", re.compile(r"\b(?:patient|member|insured|subscriber|provider)\s+name\s*[:=]\s*(?!\[REDACTED)[^\r\n;]{2,100}", re.IGNORECASE)),
+    ("LABELLED_ID", re.compile(r"\b(?:member|subscriber|policy|group|certificate|claim|account|mrn)\s*(?:id|no\.?|number|#)?\s*[:=]\s*(?!\[REDACTED)[A-Za-z0-9][A-Za-z0-9._/-]{2,}", re.IGNORECASE)),
+    ("DOB", re.compile(r"\b(?:dob|date\s+of\s+birth)\s*[:=]?\s*(?:[A-Za-z]+\s+)?\d", re.IGNORECASE)),
+    ("STREET_ADDRESS", re.compile(r"\b\d{1,6}\s+(?:[A-Za-z][A-Za-z.'-]*\s+){1,4}(?:street|st|avenue|ave|road|rd|drive|dr|lane|ln|boulevard|blvd)\b", re.IGNORECASE)),
+
     ("SSN", re.compile(r"\b\d{3}-\d{2}-\d{4}\b")),
     ("EMAIL", re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")),
     ("PHONE", re.compile(r"\b(?:\+?1[\s.\-])?\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}\b")),
@@ -576,6 +581,11 @@ def _verify_quote(quote: str, haystack: str) -> str:
 
 def _phi_kinds(text: str) -> list:
     """Which tripwire patterns this text trips. Empty means clean."""
+    text = text.translate({code: chr(code - 0xFEE0) for code in range(0xFF01, 0xFF5F)})
+    for char in ("\u200b", "\u200c", "\u200d", "\u2060", "\ufeff"):
+        text = text.replace(char, "")
+    for char in ("\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2212"):
+        text = text.replace(char, "-")
     return [kind for kind, pattern in _PHI_PATTERNS if pattern.search(text) is not None]
 
 
@@ -1382,7 +1392,7 @@ class OmbudsCourt(gl.Contract):
         still carries a member id while they can still fix it, rather than after a
         rejected transaction.
         """
-        return [kind for kind, pattern in _PHI_PATTERNS if pattern.search(text) is not None]
+        return _phi_kinds(text)
 
     # ---------------------------------------------------------------------------- writes
 
@@ -1423,12 +1433,7 @@ class OmbudsCourt(gl.Contract):
             ("cpt_codes", cpt_codes),
             ("icd10_codes", icd10_codes),
         ):
-            for kind, pattern in _PHI_PATTERNS:
-                if pattern.search(blob) is not None:
-                    raise gl.vm.UserError(
-                        f"{ERROR_EXPECTED} {label} still contains something that looks like "
-                        f"{kind}. Nothing identifying a patient is allowed on chain."
-                    )
+            _assert_no_phi(blob, label)
 
         cpt_tuple = _split_codes(cpt_codes)
         icd_tuple = _split_codes(icd10_codes)
@@ -1436,10 +1441,10 @@ class OmbudsCourt(gl.Contract):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} at least one CPT or ICD-10 code is required")
         for code in cpt_tuple:
             if _CPT_RE.match(code) is None:
-                raise gl.vm.UserError(f"{ERROR_EXPECTED} '{code}' is not a CPT or HCPCS code")
+                raise gl.vm.UserError(f"{ERROR_EXPECTED} invalid CPT or HCPCS code")
         for code in icd_tuple:
             if _ICD10_RE.match(code) is None:
-                raise gl.vm.UserError(f"{ERROR_EXPECTED} '{code}' is not an ICD-10-CM code")
+                raise gl.vm.UserError(f"{ERROR_EXPECTED} invalid ICD-10-CM code")
 
         disputed = int(disputed_atto)
         if disputed <= 0:

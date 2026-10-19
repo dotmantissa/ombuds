@@ -209,14 +209,14 @@ export function parseUsdToAtto(input: string): bigint {
   const match = USD_PATTERN.exec(trimmed);
 
   if (!match) {
-    throw new RangeError(`cannot read "${input}" as a US dollar amount`);
+    throw new RangeError('Enter a valid US dollar amount.');
   }
 
   const wholePart = (match[2] ?? '').replace(/,/g, '');
   const fractionPart = match[3] ?? '';
 
   if (wholePart.length === 0 && fractionPart.length === 0) {
-    throw new RangeError(`cannot read "${input}" as a US dollar amount`);
+    throw new RangeError('Enter a valid US dollar amount.');
   }
 
   const whole = wholePart.length > 0 ? BigInt(wholePart) : 0n;

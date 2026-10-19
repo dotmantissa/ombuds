@@ -150,10 +150,10 @@ def test_a_full_service_date_is_refused(court, direct_vm, direct_alice):
 @pytest.mark.parametrize(
     "cpt,icd,expected",
     [
-        ("4364", "E66.01", "is not a CPT or HCPCS code"),
-        ("436445", "E66.01", "is not a CPT or HCPCS code"),
-        ("43644", "E6601X9", "is not an ICD-10-CM code"),
-        ("43644", "166.01", "is not an ICD-10-CM code"),
+        ("4364", "E66.01", "invalid CPT or HCPCS code"),
+        ("436445", "E66.01", "invalid CPT or HCPCS code"),
+        ("43644", "E6601X9", "invalid ICD-10-CM code"),
+        ("43644", "166.01", "invalid ICD-10-CM code"),
         ("", "", "at least one CPT or ICD-10 code is required"),
     ],
 )
@@ -1908,3 +1908,15 @@ def test_bond_custody_and_funded_retry(court, direct_vm, direct_alice, aetna_015
     court.retry_bond_payment(payment['id'])
     assert court.bond_payment_history(str(direct_alice))['items'][0]['attempt'] == 2
     assert court.court_stats()['bond_paid_atto'] == str(ATTO // 4)
+
+
+@pytest.mark.parametrize('text', [
+    'Member ID: 43644', 'MRN: E66.01', 'Patient Name: Jane Example',
+    'SSN 999\u200b-12\u200b-3456', 'Address: 42 Example Street',
+])
+def test_privacy_tripwire_rejects_labelled_codes_and_obfuscation(court, direct_vm, direct_alice, text):
+    direct_vm.sender = direct_alice
+    assert court.phi_scan(text)
+    with direct_vm.expect_revert('contains'):
+        court.file_case('AETNA-COMMERCIAL-BARIATRIC', 'bariatric_surgery', 'TX', '43644', 'E66.01', '50', text, '2026-04', str(ATTO), 'a' * 64)
+    assert court.court_stats()['case_count'] == 0

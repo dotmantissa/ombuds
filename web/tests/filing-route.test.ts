@@ -380,13 +380,14 @@ test('a source URL carrying an identifier is refused with a 422, and not echoed 
   assert.equal(recorded.cases.length, 0);
 });
 
-test('a court that refuses the filing becomes a 422 carrying what it said', async () => {
+test('a refused filing exposes a safe message and transaction hash', async () => {
   const { deps, recorded } = harness({}, { ok: false, error: '[EXPECTED] that rule has lapsed' });
   const res = await fileCase(post(body()), deps);
 
   assert.equal(res.status, 422);
   const payload = (await res.json()) as { error: string; txHash: string };
-  assert.match(payload.error, /that rule has lapsed/);
+  assert.match(payload.error, /The court refused/);
+  assert.ok(!payload.error.includes('that rule has lapsed'));
   assert.equal(payload.txHash, TX_HASH);
   // A refused filing is not written to the index.
   assert.equal(recorded.cases.length, 0);
@@ -412,4 +413,13 @@ test('a receipt with no docket in it is reported rather than invented', async ()
   const payload = (await res.json()) as { docket: string | null };
   assert.equal(payload.docket, null);
   assert.equal(recorded.cases.length, 0);
+});
+
+
+test('a contract error carrying patient data is never echoed', async () => {
+  const secret = 'private-patient@example.com';
+  const { deps } = harness({}, { ok: false, error: `[EXPECTED] invalid input ${secret}` });
+  const res = await fileCase(post(body()), deps);
+  assert.equal(res.status, 422);
+  assert.ok(!(await res.text()).includes(secret));
 });

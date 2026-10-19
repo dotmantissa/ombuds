@@ -30,6 +30,7 @@ import { parseUsdToAtto } from './bands';
 
 /** The identifier classes this module can find and remove. */
 export type RedactionKind =
+  | 'NAME'
   | 'MEMBER_ID'
   | 'MRN'
   | 'POLICY_NUMBER'
@@ -84,7 +85,7 @@ export function redactionToken(kind: RedactionKind): string {
  * requirement is what stops `Member ID: see enclosed` redacting the word
  * `enclosed`.
  */
-const ID_VALUE = '((?=[A-Za-z0-9-]*\\d)[A-Za-z0-9][A-Za-z0-9-]{3,})';
+const ID_VALUE = '((?=[A-Za-z0-9._/-]*\\d)[A-Za-z0-9][A-Za-z0-9._/-]{2,})';
 
 /** An optional `number`, `no.`, `id` or `#` suffix after a label word. */
 const NUM_SUFFIX = '(?:id|no\\.?|number|nbr|#)';
@@ -126,6 +127,16 @@ const ID_PARAMS =
  * digit off the end of one.
  */
 export const SAFE_HARBOR_PATTERNS: readonly SafeHarborPattern[] = [
+  {
+    kind: 'NAME', note: 'Explicit patient, insured and provider name labels override code-shaped tokens.',
+    pattern: /((?:patient|member|insured|subscriber|provider)\s+name\s*[:=]\s*)([^\n\r;<>]{2,100})/gi,
+    keepsLabel: true, respectsCodes: false,
+  },
+  {
+    kind: 'PHONE', note: 'Labelled phone and fax numbers, including international formats.',
+    pattern: /((?:telephone|phone|mobile|fax|tel)\s*[:=]\s*)(\+?[\d() .-]{7,25}\d)/gi,
+    keepsLabel: true, respectsCodes: false,
+  },
   /* --- label anchored identifiers, first --- */
   {
     kind: 'MEMBER_ID',
@@ -140,6 +151,7 @@ export const SAFE_HARBOR_PATTERNS: readonly SafeHarborPattern[] = [
       'gi',
     ),
     keepsLabel: true,
+    respectsCodes: false,
   },
   {
     kind: 'MRN',
@@ -149,6 +161,7 @@ export const SAFE_HARBOR_PATTERNS: readonly SafeHarborPattern[] = [
       'gi',
     ),
     keepsLabel: true,
+    respectsCodes: false,
   },
   {
     kind: 'POLICY_NUMBER',
@@ -158,6 +171,7 @@ export const SAFE_HARBOR_PATTERNS: readonly SafeHarborPattern[] = [
       'gi',
     ),
     keepsLabel: true,
+    respectsCodes: false,
   },
   {
     kind: 'GROUP_NUMBER',
@@ -167,6 +181,7 @@ export const SAFE_HARBOR_PATTERNS: readonly SafeHarborPattern[] = [
       'gi',
     ),
     keepsLabel: true,
+    respectsCodes: false,
   },
   {
     kind: 'CLAIM_NUMBER',
@@ -179,6 +194,7 @@ export const SAFE_HARBOR_PATTERNS: readonly SafeHarborPattern[] = [
       'gi',
     ),
     keepsLabel: true,
+    respectsCodes: false,
   },
   {
     kind: 'ACCOUNT_NUMBER',
@@ -188,6 +204,7 @@ export const SAFE_HARBOR_PATTERNS: readonly SafeHarborPattern[] = [
       'gi',
     ),
     keepsLabel: true,
+    respectsCodes: false,
   },
   {
     kind: 'DATE_OF_BIRTH',
@@ -201,6 +218,7 @@ export const SAFE_HARBOR_PATTERNS: readonly SafeHarborPattern[] = [
       'gi',
     ),
     keepsLabel: true,
+    respectsCodes: false,
   },
   {
     kind: 'SSN',
@@ -211,6 +229,7 @@ export const SAFE_HARBOR_PATTERNS: readonly SafeHarborPattern[] = [
       'gi',
     ),
     keepsLabel: true,
+    respectsCodes: false,
   },
 
   /* --- unambiguous shapes, no label needed --- */
@@ -438,6 +457,23 @@ function freshRegex(pattern: RegExp): RegExp {
   return new RegExp(pattern.source, pattern.flags);
 }
 
+/** Normalize copied HTML, OCR typography and invisible separators before detection. */
+export function normaliseDocumentText(input: string): string {
+  return input.normalize('NFKC')
+    .replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
+    .replace(/[\u2010-\u2015\u2212]/g, '-')
+    .replace(/&amp;/gi, '&')
+    .replace(/&#(?:x([0-9a-f]+)|(\d+));/gi, (_m, hex, dec) => {
+      const point = Number.parseInt(hex ?? dec, hex ? 16 : 10);
+      return point > 0 && point <= 0x10ffff ? String.fromCodePoint(point) : ' ';
+    })
+    .replace(/<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<br\s*\/?\s*>|<\/(?:p|div|tr|li)>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;|&ensp;|&emsp;/gi, ' ')
+    .replace(/&commat;/gi, '@').replace(/&amp;/gi, '&');
+}
+
 /**
  * Remove every Safe Harbor identifier this module can recognise.
  *
@@ -449,7 +485,7 @@ function freshRegex(pattern: RegExp): RegExp {
  * CPT and ICD codes are never touched.
  */
 export function scrubText(input: string): ScrubResult {
-  let clean = input;
+  let clean = normaliseDocumentText(input);
   const counts = new Map<RedactionKind, number>();
 
   const bump = (kind: RedactionKind): void => {
@@ -517,7 +553,7 @@ export function bucketServiceDate(iso: string): string {
     const year = Number(isoLike[1]);
     const month = Number(isoLike[2]);
     if (month >= 1 && month <= 12) return `${year}-${pad2(month)}`;
-    throw new RangeError(`"${iso}" has a month outside 1 to 12`);
+    throw new RangeError('The service month must be between 1 and 12.');
   }
 
   // US ordering, month first, because these are US denial letters.
@@ -527,12 +563,12 @@ export function bucketServiceDate(iso: string): string {
     const rawYear = Number(usLike[3]);
     const year = rawYear < 100 ? 2000 + rawYear : rawYear;
     if (month >= 1 && month <= 12) return `${year}-${pad2(month)}`;
-    throw new RangeError(`"${iso}" has a month outside 1 to 12`);
+    throw new RangeError('The service month must be between 1 and 12.');
   }
 
   const parsed = new Date(trimmed);
   if (Number.isNaN(parsed.getTime())) {
-    throw new RangeError(`cannot read "${iso}" as a date`);
+    throw new RangeError('Enter a valid service date.');
   }
   // Local components, to match whatever the platform just parsed. Reading UTC
   // here would shift a midnight date into the previous month.
@@ -707,8 +743,11 @@ export function assertNoPhi(record: CaseRecord): void {
     if (!value) continue;
     for (const entry of SAFE_HARBOR_PATTERNS) {
       const pattern = freshRegex(entry.pattern);
-      const hit = pattern.exec(value);
-      if (hit === null) continue;
+      let hit;
+      while ((hit = pattern.exec(normaliseDocumentText(value))) !== null) {
+
+      const detected = entry.keepsLabel ? (hit[2] ?? hit[0]) : hit[0];
+      if (detected === redactionToken(entry.kind)) continue;
 
       // A bare code is not PHI. This is the same exemption scrubText applies,
       // and without it a record whose only content is codes would be rejected.
@@ -721,6 +760,7 @@ export function assertNoPhi(record: CaseRecord): void {
       }
 
       throw new PhiLeakError(field, entry.kind);
+      }
     }
   }
 }
@@ -816,6 +856,12 @@ export async function buildCaseRecord(
     (input.icd10Codes ?? mined.icd10).map((code) => code.trim().toUpperCase()),
   );
 
+  if (cptCodes.length + icd10Codes.length > 40 ||
+      cptCodes.some((c) => !/^(?:\d{5}|[A-Z]\d{4})$/.test(c)) ||
+      icd10Codes.some((c) => !/^[A-TV-Z]\d{2}(?:\.[0-9A-Z]{1,4})?$/.test(c))) {
+    throw new RangeError('Review the procedure and diagnosis codes.');
+  }
+
   /* --- amount --- */
   const disputedAmountAtto =
     typeof input.disputedAmount === 'bigint'
@@ -845,7 +891,7 @@ export async function buildCaseRecord(
   /* --- state --- */
   const state = input.state.trim().toUpperCase();
   if (!/^[A-Z]{2}$/.test(state)) {
-    throw new RangeError(`"${input.state}" is not a two letter state code`);
+    throw new RangeError('Use a two letter state code.');
   }
 
   /* --- source URLs --- */
@@ -859,7 +905,7 @@ export async function buildCaseRecord(
     state,
     cpt_codes: cptCodes,
     icd10_codes: icd10Codes,
-    denial_reason_code: input.denialReasonCode.trim(),
+    denial_reason_code: scrubText(input.denialReasonCode.trim()).clean,
     denial_rationale: rationale.clean,
     service_month: bucketServiceDate(input.serviceDate),
     disputed_amount_atto: disputedAmountAtto,
