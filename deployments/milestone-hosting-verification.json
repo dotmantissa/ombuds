@@ -1,0 +1,57 @@
+{
+  "checkedAt": "2026-10-19T17:07:00.329Z",
+  "url": "https://ombuds-five.vercel.app",
+  "checks": {
+    "/api/health": {
+      "http": 200,
+      "indexHealthy": true,
+      "chainHealthy": true,
+      "courtMatches": true,
+      "registryMatches": true
+    },
+    "/api/pool": {
+      "http": 200,
+      "poolMatches": true,
+      "freeCapitalAtto": "9000000000000000",
+      "outstandingAtto": "0"
+    },
+    "/api/plans": {
+      "http": 200,
+      "ruleCount": 5,
+      "observedSources": 2
+    },
+    "/api/docket": {
+      "http": 200,
+      "source": "chain",
+      "total": 1,
+      "statuses": [
+        "FILED"
+      ]
+    },
+    "/account": {
+      "http": 200,
+      "html": true
+    },
+    "/policies": {
+      "http": 200,
+      "html": true
+    },
+    "/pool": {
+      "http": 200,
+      "html": true
+    },
+    "/case/OMB-2026-000001": {
+      "http": 200,
+      "html": true
+    }
+  },
+  "finalCheck": {
+    "at": "2026-10-19T17:15:05.335Z",
+    "deploymentId": "dpl_7NikxEtgHLxzFPRm7xeWUk34Sune",
+    "sourceCommit": "4a2c027dd10f17490f4ca2defe02b79661981883",
+    "indexHealthy": true,
+    "chainHealthy": true,
+    "smallBalancesVisible": true,
+    "pageErrors": []
+  }
+}

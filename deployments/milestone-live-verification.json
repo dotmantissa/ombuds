@@ -1,0 +1,104 @@
+{
+  "checkedAt": "2026-10-19T17:05:37.572Z",
+  "network": "studionet",
+  "addresses": {
+    "registry": "0xCA3AFfdcc8946aCd1F8B80E7Ad8569906e72B943",
+    "court": "0xA81965c8F7c9677960E00070e077204379B82A7C",
+    "pool": "0x194466aC39bD9998725B759ca8c3403fefef9f2c"
+  },
+  "docket": "OMB-2026-000001",
+  "panels": [
+    {
+      "txHash": "0x2cd256de3a0ac5cef4839707d7b832350e9f9b155a14c8716dac72a456902fb5",
+      "status": "FINALIZED",
+      "execution": "FINISHED_WITH_RETURN",
+      "consensus": "MAJORITY_DISAGREE",
+      "ok": false,
+      "reason": "The leader proposal was rejected by validator consensus and was not committed."
+    },
+    {
+      "txHash": "0x59c10a3069f06a0a4e17561f52d952df5ce304308a15fd36bc598a0b8b3c0f2d",
+      "status": "FINALIZED",
+      "execution": "FINISHED_WITH_ERROR",
+      "consensus": "MAJORITY_DISAGREE",
+      "ok": false,
+      "reason": "[LLM_ERROR] quoted clause does not appear in the section it was filed under, so the citation is either fabricated or attributed to the wrong section"
+    }
+  ],
+  "transactions": {
+    "refresh_policy": {
+      "hash": "0x742400f6f44a48bc3cc35a5e3935a2911809e0abd7dd31e0fa0d738978cb7b1a",
+      "status": "EXECUTED"
+    },
+    "deposit": {
+      "hash": "0x35696233456eab0e1aae651d923e7673ef578066715476791eb428162a58f5bf",
+      "status": "EXECUTED"
+    },
+    "file": {
+      "hash": "0x10d2521b6abd225fe855cf2e4607ae2ff8a3f5be5544530b6bed64868f459f84",
+      "status": "EXECUTED"
+    },
+    "adjudicate": {
+      "hash": "0x59c10a3069f06a0a4e17561f52d952df5ce304308a15fd36bc598a0b8b3c0f2d",
+      "status": "FINALIZED_REJECTED"
+    }
+  },
+  "verificationScope": "Live source refresh, deposit, filing and recipient withdrawal credit verified. Neither synthetic adjudication attempt produced a committed verdict; no claimant advance or recovery was submitted.",
+  "case": {
+    "advanced_atto": "0",
+    "cpt_codes": [
+      "43775"
+    ],
+    "denial_rationale": "Benefit denied because bariatric surgery is considered not medically necessary. The requested sleeve gastrectomy meets the published clinical policy criteria for persistent severe obesity following prior nonsurgical treatment.",
+    "denial_reason_code": "50",
+    "disputed_atto": "12000000000000000000000",
+    "docket": "OMB-2026-000001",
+    "evidence_sha256": "7721d33ba287d6b66244b1b16643c60ee1191af95daedd4b650f24e77e495729",
+    "family_id": "bariatric_surgery",
+    "filed_at": "2026-10-19T16:37:55.707175Z",
+    "filer": "0xBC1399c55538eC034d4Da550C03c34Ae0C357f53",
+    "has_verdict": false,
+    "icd10_codes": [
+      "E66.01",
+      "Z68.41"
+    ],
+    "panel_round": 1,
+    "plan_id": "AETNA-COMMERCIAL-BARIATRIC_SURGERY",
+    "pre_review_ruling": "",
+    "review_bond_atto": "0",
+    "review_open": false,
+    "review_requester": "",
+    "service_month": "2026-04",
+    "settled_atto": "0",
+    "state": "TX",
+    "status": "FILED"
+  },
+  "poolStats": {
+    "accounting_basis": "unpaid principal; recipient acknowledgement is separate from emission",
+    "advance_count": 0,
+    "claimable_to_members_atto": "0",
+    "free_capital_atto": "9000000000000000",
+    "net_capital_atto": "9000000000000000",
+    "outstanding_atto": "0",
+    "refunded_payouts_atto": "0",
+    "total_advanced_atto": "0",
+    "total_deposited_atto": "10000000000000000",
+    "total_fees_atto": "0",
+    "total_recovered_atto": "0",
+    "total_value_governed_atto": "9000000000000000",
+    "total_withdrawn_atto": "1000000000000000",
+    "total_written_off_atto": "0",
+    "underwriter_count": 1,
+    "utilisation_bps": 0,
+    "utilisation_headroom_atto": "6300000000000000"
+  },
+  "registryStats": {
+    "active_count": 5,
+    "as_of": "2026-10-19",
+    "curator_count": 1,
+    "rule_count": 5,
+    "total_refreshes": 3,
+    "total_revisions": 0,
+    "unretired_count": 5
+  }
+}

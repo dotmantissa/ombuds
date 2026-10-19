@@ -1,0 +1,24 @@
+{
+  "checkedAt": "2026-10-19T16:50:09.143Z",
+  "network": "studionet",
+  "pool": "0x194466aC39bD9998725B759ca8c3403fefef9f2c",
+  "txHash": "0xa004026af6cd80326dd3193834eb3fdd53fd3efbc4986cb86e5c6e9e603f3eb6",
+  "recipient": "0xBC1399c55538eC034d4Da550C03c34Ae0C357f53",
+  "amountAtto": "1000000000000000",
+  "parent": "FINALIZED",
+  "balanceBefore": "852373500919583775378",
+  "balanceAfter": "852374500919583775378",
+  "recipientCreditObserved": true,
+  "payout": {
+    "amount_atto": "1000000000000000",
+    "attempt": 1,
+    "created_at": "2026-10-19T16:49:32.112092Z",
+    "docket": "",
+    "id": "1",
+    "kind": "WITHDRAW",
+    "recipient": "0xbc1399c55538ec034d4da550c03c34ae0c357f53",
+    "status": "PENDING",
+    "updated_at": "2026-10-19T16:49:32.112092Z"
+  },
+  "note": "Balance observation for this small test is separate from parent execution. No automatic retry or general network-delivery guarantee is inferred."
+}

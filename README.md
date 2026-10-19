@@ -11,6 +11,16 @@
 
 ---
 
+## Milestone upgrade
+
+The reliability, provenance and privacy milestone adds durable submission/receipt tracking, payout attempts with funded recovery, corrected partial-repayment accounting, fixed underwriting allocations, policy/evidence/verdict histories, appeal timelines, local document review, and connected account/capital/policy dashboards.
+
+Read the [before-and-after comparison and verification guide](docs/MILESTONE_UPGRADE.md). The [current deployment](deployed_contracts.json) is separate from the [preserved legacy contracts and positions](deployments/pre-milestone-f4ba79d.json). Existing positions remain on those legacy addresses.
+
+Hosted application: [ombuds-five.vercel.app](https://ombuds-five.vercel.app).
+
+New screens: `/account`, `/policies`, paginated `/docket`, the financial history on `/pool`, and the evidence explorer on each case. New verification commands: `npm run test:localnet` and `npm run test:e2e`.
+
 ## The problem this exists for
 
 When a health insurer denies a claim, the insurer decides whether the denial was correct.
@@ -47,12 +57,12 @@ GenLayer studio network, chain id 61999.
 
 | Contract | Address | What it holds |
 |---|---|---|
-| `PlanRegistry` | [`0x0905d1C488c626A1016Cd219E69141a141Cc0bD2`](https://genlayer-explorer.vercel.app) | Published coverage rules, their effective windows, and a digest of each one's policy text |
-| `OmbudsCourt` | [`0x24363fC8f8eBb763e5235A011DBAe7399350cA20`](https://genlayer-explorer.vercel.app) | Cases, verdicts, the appeal path and the de-identification tripwire |
-| `AdvancePool` | [`0x820A00d3C3C3cb7D5939b87967D1c5be60FceBaF`](https://genlayer-explorer.vercel.app) | Underwriter capital, advances to members, recoveries and write offs |
+| `PlanRegistry` | [`0xCA3AFfdcc8946aCd1F8B80E7Ad8569906e72B943`](https://explorer-studio.genlayer.com/tx/0xba709310717fc8a38d3bbb46b41fd0b72bb4eefad287d996b3408bc836d29e6f) | Published coverage rules, their effective windows, and a digest of each one's policy text |
+| `OmbudsCourt` | [`0xA81965c8F7c9677960E00070e077204379B82A7C`](https://explorer-studio.genlayer.com/tx/0x2296faa122a260facc2e7d688ef3e967225516e679714d281f737501e4b7d7f3) | Cases, verdicts, the appeal path and the de-identification tripwire |
+| `AdvancePool` | [`0x194466aC39bD9998725B759ca8c3403fefef9f2c`](https://explorer-studio.genlayer.com/tx/0x2b7fe50af13dcc024038c737e9713f6e09843a6eb1baff64c42c4ac4aac0d4af) | Underwriter capital, advances to members, recoveries and write offs |
 
-All five registered plan rules carry a consensus digest that every validator independently
-agreed on after re-fetching the live bulletin.
+Five plan rules are registered with immutable version histories. The policy monitor shows
+which sources have observed consensus digests and which need their first or next refresh.
 
 ## How a case actually runs
 
@@ -93,26 +103,26 @@ agreed on after re-fetching the live bulletin.
    source URL, the verdict digest so the paper matches the on-chain record, and your own
    state's external review deadline.
 
-### A real run
+### A real run on the preserved earlier deployment
 
 ```
-docket OMB-2026-000002
-consensus reached in 35s
+docket OMB-2026-000001
+consensus reached in 306s
 
 overturn_recommended  true
 ground                MEDICAL_NECESSITY
-clause_id             0157#medically-necessary
-clause_section        Medically Necessary
+clause_id             0157#medical-necessity
+clause_section        Medical Necessity
 recoverable_band      3 ($7,500 to $25,000)
 confidence            100, clears the money line
 citations             3
 
 quoted clause, verbatim from Aetna CPB 0157:
-"Body mass index (BMI) (see Appendix ) greater than or equal to 40 kg/m 2 (or greater
- than or equal to 37.5 kg/m 2 for persons of Asian ancestry) measured prior to
- preoperative preparatory program ..."
+"For adults aged 18 years or older, presence of persistent severe obesity, documented in
+ contemporaneous clinical records, defined as any of the following: Body mass index (BMI)
+ (see Appendix ) greater than or equal to 40 ..."
 
-pool advanced 2 GEN, limited by the ceiling on this payout band
+pool advanced 0.392 GEN, limited by the pool's utilisation ceiling
 case status ADVANCED
 ```
 

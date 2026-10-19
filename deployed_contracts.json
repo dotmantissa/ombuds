@@ -3,11 +3,12 @@
   "chainId": 61999,
   "rpcUrl": "https://studio.genlayer.com/api",
   "deployer": "0xBC1399c55538eC034d4Da550C03c34Ae0C357f53",
-  "deployedAt": "2026-10-10T12:22:18.839625Z",
-  "note": "PlanRegistry is the original deployment and was deliberately kept: its code did not change and its five rules carry consensus digests that cost real validator rounds. Its clause_sections were re-seeded in place, because register_rule upserts and preserves those digests. OmbudsCourt and AdvancePool were redeployed: Verdict gained confidence_floor and clears_floor so the payout predicate is settled by the panel rather than recomputed against a mutable floor, and Underwriter gained loss_borne_atto so a write off is shared pro rata instead of falling on whoever withdraws last. Both are storage changes a live deployment cannot absorb in place. Every payout also moved from on=finalized to on=accepted, because finalized transfers were measured debiting a contract and never arriving.",
-  "capital": {
-    "intendedAtto": "12000000000000000000",
-    "depositedAtto": "8000000000000000000"
+  "deployedAt": "2026-10-19T16:35:56.913Z",
+  "milestone": "reliability-provenance-appeals",
+  "sourceHashes": {
+    "plan_registry.py": "77d5e5dbb3b4c836567d366a8212921d7791683b4c161b45364e2a496a8e9f79",
+    "ombuds_court.py": "b66847d2c8410fb3381d857b54603f427636097ab6dd43062cabb4397cb71a30",
+    "advance_pool.py": "9cc75401d07dcaf0ff874d83f2c69f3b8c8fefdbac9fcf0b093234d8eedecd63"
   },
   "terms": {
     "minConfidence": 70,
@@ -26,16 +27,80 @@
   },
   "contracts": {
     "PlanRegistry": {
-      "address": "0x0905d1C488c626A1016Cd219E69141a141Cc0bD2",
-      "txHash": "0x8b640ea74dcaeaf6c18e895afad451a89eeb298620723f6f9db1356475c4c62f"
+      "address": "0xCA3AFfdcc8946aCd1F8B80E7Ad8569906e72B943",
+      "txHash": "0xba709310717fc8a38d3bbb46b41fd0b72bb4eefad287d996b3408bc836d29e6f"
     },
     "OmbudsCourt": {
-      "address": "0x24363fC8f8eBb763e5235A011DBAe7399350cA20",
-      "txHash": "0x1fc228b21be8fc536340cd0ecb077a4082bca194c599d2e910442b746ae7f668"
+      "address": "0xA81965c8F7c9677960E00070e077204379B82A7C",
+      "txHash": "0x2296faa122a260facc2e7d688ef3e967225516e679714d281f737501e4b7d7f3"
     },
     "AdvancePool": {
-      "address": "0x820A00d3C3C3cb7D5939b87967D1c5be60FceBaF",
-      "txHash": "0x4fd40ff589f304bd9dd4583ddab28c3af29d0b452e429aff72f5755bd09cb84c"
+      "address": "0x194466aC39bD9998725B759ca8c3403fefef9f2c",
+      "txHash": "0x2b7fe50af13dcc024038c737e9713f6e09843a6eb1baff64c42c4ac4aac0d4af"
     }
+  },
+  "verification": {
+    "checkedAt": "2026-10-19T16:35:56.913Z",
+    "registryStats": {
+      "active_count": 5,
+      "as_of": "2026-10-19",
+      "curator_count": 1,
+      "rule_count": 5,
+      "total_refreshes": 0,
+      "total_revisions": 0,
+      "unretired_count": 5
+    },
+    "poolStats": {
+      "accounting_basis": "unpaid principal; recipient acknowledgement is separate from emission",
+      "advance_count": 0,
+      "claimable_to_members_atto": "0",
+      "free_capital_atto": "0",
+      "net_capital_atto": "0",
+      "outstanding_atto": "0",
+      "refunded_payouts_atto": "0",
+      "total_advanced_atto": "0",
+      "total_deposited_atto": "0",
+      "total_fees_atto": "0",
+      "total_recovered_atto": "0",
+      "total_value_governed_atto": "0",
+      "total_withdrawn_atto": "0",
+      "total_written_off_atto": "0",
+      "underwriter_count": 0,
+      "utilisation_bps": 0,
+      "utilisation_headroom_atto": "0"
+    },
+    "wiring": true,
+    "sourceFingerprints": "Bariatric and CPAP observations succeeded; other source checks were rate limited. The policy monitor displays their actual observation status.",
+    "nativeDelivery": "A 0.001 GEN withdrawal finalized and exact recipient credit was observed; see the separate payout evidence. Parent execution alone is never delivery proof.",
+    "livePayoutEvidence": "deployments/milestone-payout-verification.json",
+    "liveCaseEvidence": "deployments/milestone-live-verification.json",
+    "liveCaseOutcome": "The synthetic case remains FILED after two rejected panels. No claimant advance was booked without a committed verdict.",
+    "poolStatsAfterSmoke": {
+      "accounting_basis": "unpaid principal; recipient acknowledgement is separate from emission",
+      "advance_count": 0,
+      "claimable_to_members_atto": "0",
+      "free_capital_atto": "9000000000000000",
+      "net_capital_atto": "9000000000000000",
+      "outstanding_atto": "0",
+      "refunded_payouts_atto": "0",
+      "total_advanced_atto": "0",
+      "total_deposited_atto": "10000000000000000",
+      "total_fees_atto": "0",
+      "total_recovered_atto": "0",
+      "total_value_governed_atto": "9000000000000000",
+      "total_withdrawn_atto": "1000000000000000",
+      "total_written_off_atto": "0",
+      "underwriter_count": 1,
+      "utilisation_bps": 0,
+      "utilisation_headroom_atto": "6300000000000000"
+    }
+  },
+  "previousDeployment": "deployments/pre-milestone-f4ba79d.json",
+  "note": "Fresh immutable deployment. No legacy funds, cases or positions were migrated. Native payout delivery requires separate evidence.",
+  "frontend": {
+    "productionUrl": "https://ombuds-five.vercel.app",
+    "deploymentId": "dpl_7NikxEtgHLxzFPRm7xeWUk34Sune",
+    "sourceCommit": "4a2c027dd10f17490f4ca2defe02b79661981883",
+    "verification": "deployments/milestone-hosting-verification.json"
   }
 }

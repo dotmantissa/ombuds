@@ -1,0 +1,21 @@
+{
+  "checkedAt": "2026-10-19T17:08:10.953Z",
+  "pages": {
+    "/account": {
+      "http": 200,
+      "heading": "Cases, capital and payments.",
+      "horizontalOverflow": false
+    },
+    "/pool": {
+      "http": 200,
+      "heading": "Somebody has to pay the bill before the insurer gets round to it.",
+      "horizontalOverflow": false
+    },
+    "/policies": {
+      "http": 200,
+      "heading": "Policy monitoring and history.",
+      "horizontalOverflow": false
+    }
+  },
+  "pageErrors": []
+}
