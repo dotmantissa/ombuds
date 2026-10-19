@@ -448,20 +448,26 @@ export async function fileCase(
 
 /** The docket string the contract returned. */
 export function readDocket(receipt: unknown): string | null {
-  const seen = new Set<unknown>();
-  const stack: unknown[] = [receipt];
-  while (stack.length > 0) {
-    const node = stack.pop();
-    if (node === null || node === undefined || seen.has(node)) continue;
-    if (typeof node === 'string') {
-      const match = node.match(/OMB-\d{4}-\d{6}/);
-      if (match !== null) return match[0];
-      continue;
-    }
-    if (typeof node === 'object') {
-      seen.add(node);
-      for (const value of Object.values(node as Record<string, unknown>)) stack.push(value);
-    }
+  if (receipt === null || typeof receipt !== 'object') return null;
+  const consensus = (receipt as Record<string, unknown>).consensus_data;
+  if (consensus === null || typeof consensus !== 'object') return null;
+  const raw = (consensus as Record<string, unknown>).leader_receipt;
+  const candidates = (Array.isArray(raw) ? raw : raw ? [raw] : [])
+    .filter((entry): entry is Record<string, unknown> => entry !== null && typeof entry === 'object')
+    .filter((entry) => entry.mode === undefined || entry.mode === 'leader');
+  const leader = candidates.at(-1);
+  if (!leader) return null;
+  const result = leader.result;
+  let value: unknown = result;
+  if (result !== null && typeof result === 'object') {
+    const returned = result as Record<string, unknown>;
+    if (returned.status !== undefined && returned.status !== 'return') return null;
+    const payload = returned.payload;
+    value = payload !== null && typeof payload === 'object'
+      ? (payload as Record<string, unknown>).readable : payload;
   }
-  return null;
+  if (typeof value !== 'string') return null;
+  let candidate: unknown = value.trim();
+  try { candidate = JSON.parse(value); } catch { /* Some SDK versions return the plain string. */ }
+  return typeof candidate === 'string' && /^OMB-\d{4}-\d{6}$/.test(candidate) ? candidate : null;
 }

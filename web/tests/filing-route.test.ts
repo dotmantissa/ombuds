@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import { buildCaseRecord, sha256Hex } from '@/lib/deident';
 import {
   fileCase,
+  readDocket,
   listFiledCases,
   type FilingDeps,
 } from '@/lib/filing';
@@ -422,4 +423,15 @@ test('a contract error carrying patient data is never echoed', async () => {
   const res = await fileCase(post(body()), deps);
   assert.equal(res.status, 422);
   assert.ok(!(await res.text()).includes(secret));
+});
+
+
+test('docket extraction uses only the actual leader return, never request text or idle validators', () => {
+  const receipt = { data: { denial_rationale: 'References OMB-2026-999999' }, consensus_data: { leader_receipt: [
+    { mode: 'leader', result: { status: 'return', payload: { readable: '"OMB-2026-000123"' } } },
+    { mode: 'validator', vote: 'idle', result: 'OMB-2026-888888' },
+  ] } };
+  assert.equal(readDocket(receipt), 'OMB-2026-000123');
+  assert.equal(readDocket({ result: 'OMB-2026-999999' }), null);
+  assert.equal(readDocket({ consensus_data: { leader_receipt: [{ mode: 'leader', result: { status: 'rollback', payload: 'OMB-2026-999999' } }] } }), null);
 });
