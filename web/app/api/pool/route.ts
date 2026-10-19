@@ -1,11 +1,11 @@
 import { z } from 'zod';
 
 import { recordPoolEvent } from '@/lib/db';
+import { trackedWrite, existingOperationResponse } from '@/lib/operations';
 import {
   advancePoolAddress,
   readContract,
   ReceiptTimeoutError,
-  writeContract,
 } from '@/lib/genlayer';
 import { authErrorResponse, requireMember } from '@/lib/privy';
 
@@ -40,8 +40,9 @@ const Body = z.object({ docket: z.string().regex(/^OMB-\d{4}-\d{6}$/) });
  * rather than taking it from whoever made the request.
  */
 export async function POST(req: Request) {
+  let member;
   try {
-    await requireMember(req);
+    member = await requireMember(req);
   } catch (err) {
     return authErrorResponse(err);
   }
@@ -67,12 +68,14 @@ export async function POST(req: Request) {
 
   let write;
   try {
-    write = await writeContract({
+    write = await trackedWrite(member.id, req.headers.get('idempotency-key') ?? `advance_${body.docket}`, {
       address: pool,
       functionName: 'advance',
       args: [body.docket],
-    });
+    }, body.docket);
   } catch (err) {
+    const existing = existingOperationResponse(err);
+    if (existing) return existing;
     if (err instanceof ReceiptTimeoutError) {
       // Nothing is recorded as advanced. The pool's own ledger is the record and
       // the pool page reads it from the contract.
@@ -88,7 +91,7 @@ export async function POST(req: Request) {
         { status: 202 },
       );
     }
-    throw err;
+    return Response.json({ error: 'The advance could not be confirmed. Check transaction history before retrying.' }, { status: 502 });
   }
 
   if (!write.ok) {
@@ -98,17 +101,20 @@ export async function POST(req: Request) {
     );
   }
 
+  const actual = await readContract<{ amount_atto: string; payout_id: string }>({ address: pool, functionName: 'get_advance', args: [body.docket] });
   await recordPoolEvent({
     kind: 'ADVANCE',
     actor: 'pool',
-    amountAtto: BigInt(quote.amount_atto),
+    amountAtto: BigInt(actual.amount_atto),
     docket: body.docket,
     txHash: write.txHash,
   }).catch(() => undefined);
 
   return Response.json({
     docket: body.docket,
-    amountAtto: quote.amount_atto,
+    amountAtto: actual.amount_atto,
+    payoutId: actual.payout_id,
+    paymentStatus: 'PENDING',
     txHash: write.txHash,
     status: write.status,
   });

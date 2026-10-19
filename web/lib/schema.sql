@@ -94,3 +94,22 @@ CREATE INDEX IF NOT EXISTS verdicts_ground_idx ON verdicts (ground);
 CREATE INDEX IF NOT EXISTS pool_events_docket_idx ON pool_events (docket);
 CREATE INDEX IF NOT EXISTS pool_events_at_idx  ON pool_events (at DESC);
 CREATE INDEX IF NOT EXISTS snapshots_docket_idx ON source_snapshots (docket);
+
+-- A submission intent is persisted BEFORE signing. An interrupted SUBMITTING row
+-- stays blocked for reconciliation; timeouts never authorize another payment.
+CREATE TABLE IF NOT EXISTS chain_operations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  member_id uuid NOT NULL REFERENCES members(id),
+  request_key text NOT NULL,
+  fingerprint char(64) NOT NULL,
+  contract_address text NOT NULL,
+  method text NOT NULL,
+  docket text,
+  amount_atto numeric(78,0) NOT NULL DEFAULT 0,
+  tx_hash text UNIQUE,
+  status text NOT NULL DEFAULT 'SUBMITTING',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(member_id, request_key)
+);
+CREATE INDEX IF NOT EXISTS operations_member_idx ON chain_operations(member_id, created_at DESC);

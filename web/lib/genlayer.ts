@@ -302,7 +302,7 @@ export function readExecutionOutcome(
 export function readLifecycleStatus(receipt: GenLayerTransaction): string {
   if (receipt.statusName) return String(receipt.statusName);
   if (typeof receipt.status === 'string') return receipt.status;
-  if (typeof receipt.status === 'number') return `status:${receipt.status}`;
+  if (typeof receipt.status === 'number') return ({ 5: 'ACCEPTED', 7: 'FINALIZED' } as Record<number, string>)[receipt.status] ?? `status:${receipt.status}`;
   return 'UNKNOWN';
 }
 
@@ -319,6 +319,8 @@ export interface WriteParams {
    * take a payment, so this is zero unless you have a very good reason.
    */
   value?: bigint;
+  /** Persist the hash immediately after broadcast, before waiting for consensus. */
+  onSubmitted?: (hash: TransactionHash) => Promise<void>;
 }
 
 export interface WriteResult {
@@ -401,6 +403,7 @@ export async function writeContract(
   });
 
   const txHash = submitted as TransactionHash;
+  await params.onSubmitted?.(txHash);
 
   // Our own deadline decides when to stop waiting, so that a real transport
   // failure from the SDK still propagates as itself instead of being reported
@@ -430,7 +433,7 @@ export async function writeContract(
   return {
     txHash,
     receipt,
-    ok: outcome.ok,
+    ok: outcome.ok && ['ACCEPTED', 'FINALIZED'].includes(readLifecycleStatus(receipt)),
     status: readLifecycleStatus(receipt),
     executionResult: outcome.executionResult,
     error: outcome.error,

@@ -52,27 +52,14 @@ ADVANCE_STATUSES = ("OUTSTANDING", "RECOVERED", "WRITTEN_OFF")
 
 ZERO_ADDRESS = "0x" + "0" * 40
 
-# How this contract pays people, and what is measured about it.
-#
-# Every transfer out uses on="accepted" rather than on="finalized". That is the documented
-# fast path and the right default for a payout that is the last statement of its function,
-# after every check and after this contract has already debited its own books. The risk it
-# carries is that an appeal could revert the state change with the transfer already gone,
-# and that window is as narrow as the ordering can make it.
-#
-# What has NOT been established is that either setting delivers on studionet. Measured
-# there, against both settings: the value leaves this contract's balance and the recipient
-# address is never credited. A 12 GEN withdrawal under on="finalized" has never landed. A
-# 0.5 GEN withdrawal under on="finalized" left the pool and did not arrive. A 0.05 GEN
-# withdrawal under on="accepted" moved the pool's balance from 0.61 to 0.56 and left the
-# recipient's balance unchanged. Inbound payable deposits work; outbound credit to an
-# external address is not observable.
-#
-# So this is a platform question and not something this contract can settle. The ledger
-# here is correct either way: a withdrawal is debited, recorded and reflected in equity.
-# Anybody relying on these payouts on studionet should confirm delivery against the
-# network before trusting the balance, and that is why the figures above are written down
-# rather than summarised as fixed.
+# Transfers to wallet addresses use the external EVM interface, after finalization.
+# A successful parent execution only proves emission, never recipient delivery.
+@gl.evm.contract_interface
+class Wallet:
+    class View:
+        pass
+    class Write:
+        pass
 
 
 @allow_storage
@@ -108,6 +95,8 @@ class Advance:
     fee_atto: u256
     member_balance_atto: u256
     closed_at: str
+    fee_rate_bps: u256
+    payout_id: str
 
 
 def _chain_stamp() -> str:
@@ -185,6 +174,13 @@ class AdvancePool(gl.Contract):
     total_written_off_atto: u256
     total_member_share_atto: u256
     advance_count: u256
+    journal: DynArray[str]
+    payouts: TreeMap[str, str]
+    payout_ids: DynArray[str]
+    recovery_ids: TreeMap[str, bool]
+    risk_weights: TreeMap[str, str]
+    reserved: TreeMap[str, u256]
+    refunded_payouts_atto: u256
 
     def __init__(
         self,
@@ -306,68 +302,141 @@ class AdvancePool(gl.Contract):
         )
         return value if value > 0 else 0
 
-    def _accrue_fees(self, fee: int) -> None:
-        """Credit a fee to underwriters in proportion to the capital that bore the risk."""
-        if fee <= 0:
-            return
-        total_active = self._total_active_principal()
-        if total_active <= 0:
-            return
-        for address in self.underwriter_list:
-            position = self.underwriters.get(address)
-            if position is None:
-                continue
-            cut = (fee * self._active_principal(position)) // total_active
-            if cut > 0:
-                position.fees_earned_atto = u256(int(position.fees_earned_atto) + cut)
+    def _event(self, kind: str, actor: str, amount: int, docket: str = "", reference: str = "") -> None:
+        self.journal.append(json.dumps({
+            "id": len(self.journal) + 1, "kind": kind, "actor": actor,
+            "amount_atto": str(amount), "docket": docket, "reference": reference,
+            "at": _chain_stamp(),
+        }, sort_keys=True))
 
-    def _absorb_loss(self, loss: int) -> None:
-        """Write a loss down against every open position, in proportion to its capital.
-
-        Losses used to be left to show up through _free_capital alone, which sounds
-        neutral and is not. `entitled` never shrank, so the first underwriter to withdraw
-        after a write off took their principal out whole and the loss landed entirely on
-        whoever was slowest: alice could take all fifty of her fifty GEN and leave bob
-        forty nine of his. Fees were already shared pro rata by active principal, so
-        sharing losses the same way is the only version of this that is consistent.
-
-        The write down reduces active principal, which is both the claim on capital and
-        the weight used for future fees. An underwriter who has taken a loss therefore
-        earns proportionately less afterwards, which is correct: they have less capital
-        at work.
-        """
-        if loss <= 0:
-            return
-        total_active = self._total_active_principal()
-        if total_active <= 0:
-            return
-        if loss > total_active:
-            loss = total_active
-
-        # Integer division leaves a remainder. It is carried, so the figures add up to the
-        # loss exactly rather than drifting by a few atto on every write off.
-        remaining = loss
-        addresses = [a for a in self.underwriter_list]
-        for index, address in enumerate(addresses):
-            position = self.underwriters.get(address)
-            if position is None:
-                continue
-            active = self._active_principal(position)
-            if active <= 0:
-                continue
-            if index == len(addresses) - 1:
-                share = remaining
-            else:
-                share = (loss * active) // total_active
-            if share > remaining:
-                share = remaining
-            if share > active:
-                share = active
-            position.active_principal_atto = u256(active - share)
-            position.loss_borne_atto = u256(int(position.loss_borne_atto) + share)
+    def _weights(self, amount: int) -> dict:
+        # Sequential proportional allocation carries every rounding remainder and
+        # never gives a zero-weight (fully withdrawn) position the final remainder.
+        balances = {a: self._entitlement(self.underwriters[a]) - int(self.reserved.get(a, u256(0)))
+                    for a in self.underwriter_list}
+        total = sum(balances.values())
+        if total < amount:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} insufficient unreserved underwriting equity")
+        remaining = amount
+        out = {}
+        for address, weight in balances.items():
+            share = remaining * weight // total if total > 0 else 0
+            out[address] = share
             remaining -= share
-            if remaining <= 0:
-                break
+            total -= weight
+        return out
+
+    def _release_risk(self, docket: str) -> dict:
+        weights = json.loads(self.risk_weights.get(docket, "{}"))
+        for address, weight in weights.items():
+            self.reserved[address] = u256(int(self.reserved.get(address, u256(0))) - weight)
+        return weights
+
+    def _allocate(self, docket: str, amount: int, loss: bool) -> None:
+        weights = json.loads(self.risk_weights.get(docket, "{}"))
+        total = sum(weights.values())
+        remaining = amount
+        for address, weight in weights.items():
+            share = remaining * weight // total if total > 0 else 0
+            remaining -= share
+            total -= weight
+            position = self.underwriters[address]
+            if loss:
+                position.loss_borne_atto = u256(int(position.loss_borne_atto) + share)
+                # Loss consumes principal first, then retained fees if necessary.
+                position.active_principal_atto = u256(max(0, int(position.active_principal_atto) - share))
+            else:
+                position.fees_earned_atto = u256(int(position.fees_earned_atto) + share)
+            if share:
+                self._event("LOSS" if loss else "FEE", address, share, docket)
+
+    def _queue_payout(self, kind: str, recipient: str, amount: int, docket: str = "") -> str:
+        payout_id = str(len(self.payout_ids) + 1)
+        record = {"id": payout_id, "kind": kind, "recipient": recipient,
+                  "amount_atto": str(amount), "docket": docket, "status": "PENDING",
+                  "attempt": 1, "created_at": _chain_stamp(), "updated_at": _chain_stamp()}
+        self.payouts[payout_id] = json.dumps(record, sort_keys=True)
+        self.payout_ids.append(payout_id)
+        self._event(kind, recipient, amount, docket, payout_id)
+        Wallet(Address(recipient)).emit_transfer(value=u256(amount))
+        return payout_id
+
+    @gl.public.view
+    def transaction_history(self, offset: int = 0, limit: int = 25, actor: str = "", docket: str = "") -> dict:
+        if offset < 0 or limit < 1 or limit > 100:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} invalid pagination")
+        matches = [json.loads(e) for e in self.journal
+                   if (actor == "" or json.loads(e)["actor"] == _normalise_address(actor))
+                   and (docket == "" or json.loads(e)["docket"] == docket)]
+        matches.reverse()
+        return {"total": len(matches), "offset": offset, "items": matches[offset:offset + limit]}
+
+    @gl.public.view
+    def get_payout(self, payout_id: str) -> dict:
+        raw = self.payouts.get(payout_id)
+        if raw is None:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} unknown payout")
+        return json.loads(raw)
+
+    @gl.public.view
+    def payout_history(self, offset: int = 0, limit: int = 25, recipient: str = "") -> dict:
+        if offset < 0 or limit < 1 or limit > 100:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} invalid pagination")
+        records = [self.get_payout(i) for i in self.payout_ids]
+        records = [r for r in records if recipient == "" or r["recipient"] == _normalise_address(recipient)]
+        records.reverse()
+        return {"total": len(records), "items": records[offset:offset + limit]}
+
+    @gl.public.write
+    def acknowledge_payout(self, payout_id: str) -> None:
+        record = self.get_payout(payout_id)
+        if _normalise_address(gl.message.sender_address) != record["recipient"]:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} only the recipient may acknowledge receipt")
+        if record["status"] != "PENDING":
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} payout is not pending")
+        record["status"] = "ACKNOWLEDGED"
+        record["updated_at"] = _chain_stamp()
+        self.payouts[payout_id] = json.dumps(record, sort_keys=True)
+        self._event("PAYOUT_ACKNOWLEDGED", record["recipient"], int(record["amount_atto"]), record["docket"], payout_id)
+
+    @gl.public.write.payable
+    def refund_payout(self, payout_id: str) -> None:
+        # Never trust an operator's assertion of failure to recreate spendable funds.
+        # A recovery/replacement must carry the entire amount back into custody.
+        record = self.get_payout(payout_id)
+        amount = int(record["amount_atto"])
+        if record["status"] != "PENDING" or int(gl.message.value) != amount:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} pending payout and exact returned value required")
+        record["status"] = "REFUNDED"
+        record["updated_at"] = _chain_stamp()
+        self.payouts[payout_id] = json.dumps(record, sort_keys=True)
+        self.refunded_payouts_atto = u256(int(self.refunded_payouts_atto) + amount)
+        self._event("PAYOUT_REFUNDED", record["recipient"], amount, record["docket"], payout_id)
+
+    @gl.public.write
+    def retry_payout(self, payout_id: str) -> None:
+        record = self.get_payout(payout_id)
+        if record["status"] != "REFUNDED":
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} only a funded refund may be retried")
+        record["status"] = "PENDING"
+        record["attempt"] += 1
+        record["updated_at"] = _chain_stamp()
+        amount = int(record["amount_atto"])
+        self.refunded_payouts_atto = u256(int(self.refunded_payouts_atto) - amount)
+        self.payouts[payout_id] = json.dumps(record, sort_keys=True)
+        self._event("PAYOUT_RETRY", record["recipient"], amount, record["docket"], payout_id)
+        Wallet(Address(record["recipient"])).emit_transfer(value=u256(amount))
+
+    @gl.public.write
+    def sync_court(self, docket: str) -> None:
+        # Permissionless, idempotent repair of asynchronous court notifications.
+        record = self.advances.get(docket)
+        if record is None:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} no advance to synchronize")
+        court = gl.get_contract_at(self.court)
+        court.emit(on="finalized").note_advance(docket, str(int(record.amount_atto)))
+        if record.status != "OUTSTANDING":
+            court.emit(on="finalized").mark_settled(docket, str(int(record.recovered_atto)))
 
     # ----------------------------------------------------------------------------- views
 
@@ -404,6 +473,8 @@ class AdvancePool(gl.Contract):
             "underwriter_count": len(self.underwriter_list),
             "utilisation_bps": utilisation,
             "utilisation_headroom_atto": str(self._utilisation_headroom()),
+            "refunded_payouts_atto": str(int(self.refunded_payouts_atto)),
+            "accounting_basis": "unpaid principal; recipient acknowledgement is separate from emission",
         }
 
     @gl.public.view
@@ -433,7 +504,9 @@ class AdvancePool(gl.Contract):
             "withdrawn_atto": str(int(record.withdrawn_atto)),
             "fees_earned_atto": str(int(record.fees_earned_atto)),
             "loss_borne_atto": str(int(record.loss_borne_atto)),
-            "withdrawable_atto": str(self._entitlement(record)),
+            "entitlement_atto": str(self._entitlement(record)),
+            "reserved_atto": str(int(self.reserved.get(cleaned, u256(0)))),
+            "withdrawable_atto": str(min(self._free_capital(), max(0, self._entitlement(record) - int(self.reserved.get(cleaned, u256(0)))))),
             "deposit_count": int(record.deposit_count),
             "share_bps": (active * BPS) // total_active if total_active > 0 else 0,
             "first_deposit_at": record.first_deposit_at,
@@ -462,6 +535,10 @@ class AdvancePool(gl.Contract):
             "fee_atto": str(int(record.fee_atto)),
             "member_balance_atto": str(int(record.member_balance_atto)),
             "closed_at": record.closed_at,
+            "fee_rate_bps": int(record.fee_rate_bps),
+            "payout_id": record.payout_id,
+            "underwriting": json.loads(self.risk_weights.get(docket, "{}")),
+            "unpaid_principal_atto": str(max(0, int(record.amount_atto) - int(record.recovered_atto))),
         }
 
     @gl.public.view
@@ -583,6 +660,7 @@ class AdvancePool(gl.Contract):
             record.deposit_count = u256(int(record.deposit_count) + 1)
 
         self.total_capital_atto = u256(int(self.total_capital_atto) + amount)
+        self._event("DEPOSIT", address, amount)
         return {
             "address": address,
             "deposited_atto": str(amount),
@@ -612,6 +690,7 @@ class AdvancePool(gl.Contract):
         # rata share of every write off, and so does this limit, so nobody can withdraw
         # capital that no longer exists.
         entitled = self._entitlement(record)
+        available = max(0, entitled - int(self.reserved.get(address, u256(0))))
         if amount > entitled:
             raise gl.vm.UserError(
                 f"{ERROR_EXPECTED} {address} may withdraw at most {entitled} atto, "
@@ -624,6 +703,9 @@ class AdvancePool(gl.Contract):
                 f"{ERROR_EXPECTED} only {free} atto is free right now, the rest is out on "
                 "advances that have not been recovered yet"
             )
+
+        if amount > available:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} only {available} atto is unreserved; capital backs outstanding advances")
 
         # Split the withdrawal between fees and principal, and remember the split.
         #
@@ -644,12 +726,11 @@ class AdvancePool(gl.Contract):
 
         record.withdrawn_atto = u256(int(record.withdrawn_atto) + amount)
         self.total_withdrawn_atto = u256(int(self.total_withdrawn_atto) + amount)
-        gl.get_contract_at(gl.message.sender_address).emit_transfer(
-            value=u256(amount), on="accepted"
-        )
+        payout_id = self._queue_payout("WITHDRAW", address, amount)
         return {
             "address": address,
             "withdrawn_atto": str(amount),
+            "payout_id": payout_id,
             "from_fees_atto": str(amount - from_principal),
             "from_principal_atto": str(from_principal),
             "active_principal_atto": str(int(record.active_principal_atto)),
@@ -709,16 +790,21 @@ class AdvancePool(gl.Contract):
             fee_atto=u256(0),
             member_balance_atto=u256(0),
             closed_at="",
+            fee_rate_bps=u256(int(self.fee_bps)),
+            payout_id="",
         )
         self.advance_dockets.append(docket)
         self.advance_count = u256(int(self.advance_count) + 1)
         self.outstanding_atto = u256(int(self.outstanding_atto) + amount)
         self.total_advanced_atto = u256(int(self.total_advanced_atto) + amount)
 
-        # Tell the court, so the same verdict cannot be advanced against twice.
-        court.emit(on="accepted").note_advance(docket, str(amount))
-        # Pay the member.
-        gl.get_contract_at(Address(member)).emit_transfer(value=u256(amount), on="accepted")
+        weights = self._weights(amount)
+        self.risk_weights[docket] = json.dumps(weights, sort_keys=True)
+        for address, weight in weights.items():
+            self.reserved[address] = u256(int(self.reserved.get(address, u256(0))) + weight)
+        court.emit(on="finalized").note_advance(docket, str(amount))
+        payout_id = self._queue_payout("ADVANCE", member, amount, docket)
+        self.advances[docket].payout_id = payout_id
 
         return {
             "docket": docket,
@@ -726,11 +812,13 @@ class AdvancePool(gl.Contract):
             "amount_atto": str(amount),
             "band": band,
             "made_at": stamp,
+            "payout_id": payout_id,
+            "payment_status": "PENDING",
             "outstanding_atto": str(int(self.outstanding_atto)),
         }
 
     @gl.public.write.payable
-    def record_recovery(self, docket: str) -> dict:
+    def record_recovery(self, docket: str, recovery_id: str = "") -> dict:
         """The insurer paid. Settle the advance and split what came in.
 
         The pool takes its principal plus the agreed fee. Anything above that belongs to
@@ -764,13 +852,26 @@ class AdvancePool(gl.Contract):
         if received <= 0:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} a recovery must carry value")
 
+        if not recovery_id:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} a unique recovery reference is required")
+        if recovery_id:
+            if len(recovery_id) > 128:
+                raise gl.vm.UserError(f"{ERROR_EXPECTED} recovery reference too long")
+            if self.recovery_ids.get(recovery_id, False):
+                raise gl.vm.UserError(f"{ERROR_EXPECTED} recovery reference already processed")
+            self.recovery_ids[recovery_id] = True
         principal = int(record.amount_atto)
-        fee = (principal * int(self.fee_bps)) // BPS
+        fee = (principal * int(record.fee_rate_bps)) // BPS
         owed_to_pool = principal + fee
-
-        # Everything paid against this docket so far, not just what arrived in this
-        # transaction. An insurer paying in instalments has to be able to finish.
-        credited = int(record.recovered_atto) + received
+        prior = int(record.recovered_atto)
+        credited = prior + received
+        principal_returned = min(principal, credited) - min(principal, prior)
+        self.outstanding_atto = u256(int(self.outstanding_atto) - principal_returned)
+        earned_now = min(fee, max(0, credited - principal)) - int(record.fee_atto)
+        record.fee_atto = u256(int(record.fee_atto) + earned_now)
+        self.total_fees_atto = u256(int(self.total_fees_atto) + earned_now)
+        self._allocate(docket, earned_now, False)
+        self._event("RECOVERY", _normalise_address(gl.message.sender_address), received, docket, recovery_id)
 
         if credited < owed_to_pool:
             # Not enough to discharge the advance. Credit it and leave the advance open.
@@ -805,10 +906,8 @@ class AdvancePool(gl.Contract):
         record.member_balance_atto = u256(member_share)
         record.closed_at = stamp
 
-        held = int(self.outstanding_atto) - principal
-        self.outstanding_atto = u256(held if held > 0 else 0)
+        self._release_risk(docket)
         self.total_recovered_atto = u256(int(self.total_recovered_atto) + to_pool_now)
-        self.total_fees_atto = u256(int(self.total_fees_atto) + fee)
 
         if member_share > 0:
             current = int(self.claimable_atto.get(record.member, u256(0)))
@@ -817,10 +916,9 @@ class AdvancePool(gl.Contract):
                 int(self.total_member_share_atto) + member_share
             )
 
-        self._accrue_fees(fee)
 
         court = gl.get_contract_at(self.court)
-        court.emit(on="accepted").mark_settled(docket, str(credited))
+        court.emit(on="finalized").mark_settled(docket, str(credited))
 
         return {
             "docket": docket,
@@ -859,7 +957,7 @@ class AdvancePool(gl.Contract):
 
         principal = int(record.amount_atto)
         credited = int(record.recovered_atto)
-        fee = (principal * int(self.fee_bps)) // BPS
+        fee = (principal * int(record.fee_rate_bps)) // BPS
         if credited >= principal + fee:
             raise gl.vm.UserError(
                 f"{ERROR_EXPECTED} '{docket}' has been paid in full, so record_recovery "
@@ -876,17 +974,17 @@ class AdvancePool(gl.Contract):
         record.member_balance_atto = u256(0)
         record.closed_at = stamp
 
-        held = int(self.outstanding_atto) - principal
+        held = int(self.outstanding_atto) - max(0, principal - credited)
         self.outstanding_atto = u256(held if held > 0 else 0)
-        self.total_fees_atto = u256(int(self.total_fees_atto) + earned_fee)
         if shortfall > 0:
             self.total_written_off_atto = u256(int(self.total_written_off_atto) + shortfall)
-            self._absorb_loss(shortfall)
+            self._allocate(docket, shortfall, True)
 
-        self._accrue_fees(earned_fee)
+        self._release_risk(docket)
+        self._event("SHORT_SETTLEMENT", _normalise_address(gl.message.sender_address), shortfall, docket)
 
         court = gl.get_contract_at(self.court)
-        court.emit(on="accepted").mark_settled(docket, str(credited))
+        court.emit(on="finalized").mark_settled(docket, str(credited))
 
         return {
             "docket": docket,
@@ -915,12 +1013,15 @@ class AdvancePool(gl.Contract):
         loss = principal - credited if principal > credited else 0
         record.status = "WRITTEN_OFF"
         record.closed_at = _chain_stamp()
-        held = int(self.outstanding_atto) - principal
+        held = int(self.outstanding_atto) - max(0, principal - credited)
         self.outstanding_atto = u256(held if held > 0 else 0)
         self.total_written_off_atto = u256(int(self.total_written_off_atto) + loss)
         # Share the loss out now, pro rata by capital at work, rather than leaving it to
         # fall on whoever withdraws last.
-        self._absorb_loss(loss)
+        self._allocate(docket, loss, True)
+        self._release_risk(docket)
+        self._event("WRITE_OFF", _normalise_address(gl.message.sender_address), loss, docket)
+        gl.get_contract_at(self.court).emit(on="finalized").mark_settled(docket, str(credited))
         return {
             "docket": docket,
             "written_off_atto": str(loss),
@@ -940,9 +1041,7 @@ class AdvancePool(gl.Contract):
         self.claimable_atto[target] = u256(0)
         held = int(self.total_member_share_atto) - owed
         self.total_member_share_atto = u256(held if held > 0 else 0)
-        gl.get_contract_at(Address(target)).emit_transfer(
-            value=u256(owed), on="accepted"
-        )
+        self._queue_payout("SURPLUS", target, owed)
         return str(owed)
 
     @gl.public.write

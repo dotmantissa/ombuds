@@ -295,7 +295,7 @@ def test_a_full_recovery_returns_principal_and_a_fee(pool, direct_vm, direct_ali
     paid = advance + fee + (2 * ATTO)  # the insurer pays more than the advance
 
     direct_vm.value = paid
-    out = pool.record_recovery(DOCKET)
+    out = pool.record_recovery(DOCKET, f"receipt-{pool.transaction_history(0, 100)['total']}")
     direct_vm.value = 0
 
     assert out["status"] == "RECOVERED"
@@ -320,7 +320,7 @@ def test_the_fee_accrues_to_underwriters_by_share(pool, direct_vm, direct_alice,
     fee = (advance * 1200) // 10000
 
     direct_vm.value = advance + fee
-    pool.record_recovery(DOCKET)
+    pool.record_recovery(DOCKET, f"receipt-{pool.transaction_history(0, 100)['total']}")
     direct_vm.value = 0
 
     alice_cut = int(pool.position_of(str(direct_alice))["fees_earned_atto"])
@@ -342,7 +342,7 @@ def test_a_part_payment_leaves_the_advance_open(pool, direct_vm, direct_alice):
 
     short = advance // 2
     direct_vm.value = short
-    out = pool.record_recovery(DOCKET)
+    out = pool.record_recovery(DOCKET, f"receipt-{pool.transaction_history(0, 100)['total']}")
     direct_vm.value = 0
 
     assert out["status"] == "OUTSTANDING"
@@ -355,7 +355,7 @@ def test_a_part_payment_leaves_the_advance_open(pool, direct_vm, direct_alice):
     # Nothing is written off, because nothing has been given up on yet.
     stats = pool.pool_stats()
     assert int(stats["total_written_off_atto"]) == 0
-    assert int(stats["outstanding_atto"]) == advance
+    assert int(stats["outstanding_atto"]) == advance - short
 
 
 def test_an_insurer_can_pay_an_advance_off_in_instalments(pool, direct_vm, direct_alice):
@@ -366,11 +366,11 @@ def test_an_insurer_can_pay_an_advance_off_in_instalments(pool, direct_vm, direc
     owed = advance + fee
 
     direct_vm.value = owed // 3
-    first = pool.record_recovery(DOCKET)
+    first = pool.record_recovery(DOCKET, f"receipt-{pool.transaction_history(0, 100)['total']}")
     assert first["status"] == "OUTSTANDING"
 
     direct_vm.value = owed - (owed // 3)
-    last = pool.record_recovery(DOCKET)
+    last = pool.record_recovery(DOCKET, f"receipt-{pool.transaction_history(0, 100)['total']}")
     direct_vm.value = 0
 
     assert last["status"] == "RECOVERED"
@@ -393,7 +393,7 @@ def test_only_the_owner_may_close_an_advance_short(
     advance = int(pool.advance(DOCKET)["amount_atto"])
 
     direct_vm.value = advance // 2
-    pool.record_recovery(DOCKET)
+    pool.record_recovery(DOCKET, f"receipt-{pool.transaction_history(0, 100)['total']}")
     direct_vm.value = 0
 
     direct_vm.sender = MEMBER
@@ -422,7 +422,7 @@ def test_a_fully_paid_advance_cannot_be_closed_short(
     advance = int(pool.advance(DOCKET)["amount_atto"])
     fee = (advance * 1200) // BPS
     direct_vm.value = advance + fee
-    pool.record_recovery(DOCKET)
+    pool.record_recovery(DOCKET, f"receipt-{pool.transaction_history(0, 100)['total']}")
     direct_vm.value = 0
 
     direct_vm.sender = direct_owner
@@ -442,7 +442,7 @@ def test_a_recovery_with_no_value_is_refused(pool, direct_vm, direct_alice):
     pool.advance(DOCKET)
     direct_vm.value = 0
     with direct_vm.expect_revert("recovery must carry value"):
-        pool.record_recovery(DOCKET)
+        pool.record_recovery(DOCKET, f"receipt-{pool.transaction_history(0, 100)['total']}")
 
 
 def test_a_docket_cannot_be_recovered_twice(pool, direct_vm, direct_alice):
@@ -451,9 +451,9 @@ def test_a_docket_cannot_be_recovered_twice(pool, direct_vm, direct_alice):
     advance = int(pool.advance(DOCKET)["amount_atto"])
     fee = (advance * 1200) // BPS
     direct_vm.value = advance + fee
-    assert pool.record_recovery(DOCKET)["status"] == "RECOVERED"
+    assert pool.record_recovery(DOCKET, f"receipt-{pool.transaction_history(0, 100)['total']}")["status"] == "RECOVERED"
     with direct_vm.expect_revert("already RECOVERED"):
-        pool.record_recovery(DOCKET)
+        pool.record_recovery(DOCKET, f"receipt-{pool.transaction_history(0, 100)['total']}")
     direct_vm.value = 0
 
 
@@ -465,11 +465,11 @@ def test_a_recovery_tells_the_court_to_settle(make_pool, direct_vm, direct_alice
     fee = (advance * 1200) // BPS
 
     direct_vm.value = advance // 4
-    pool.record_recovery(DOCKET)
+    pool.record_recovery(DOCKET, f"receipt-{pool.transaction_history(0, 100)['total']}")
     assert [c for c in stub.calls if c[0] == "mark_settled"] == []
 
     direct_vm.value = advance + fee - advance // 4
-    pool.record_recovery(DOCKET)
+    pool.record_recovery(DOCKET, f"receipt-{pool.transaction_history(0, 100)['total']}")
     direct_vm.value = 0
 
     settled = [call for call in stub.calls if call[0] == "mark_settled"]
@@ -551,7 +551,7 @@ def test_earned_fees_are_withdrawable(pool, direct_vm, direct_alice):
     advance = int(pool.advance(DOCKET)["amount_atto"])
     fee = (advance * 1200) // 10000
     direct_vm.value = advance + fee
-    pool.record_recovery(DOCKET)
+    pool.record_recovery(DOCKET, f"receipt-{pool.transaction_history(0, 100)['total']}")
     direct_vm.value = 0
 
     out = pool.withdraw(str(100 * ATTO + fee))
@@ -579,7 +579,7 @@ def test_a_member_claims_the_surplus(pool, direct_vm, direct_alice):
     advance = int(pool.advance(DOCKET)["amount_atto"])
     fee = (advance * 1200) // 10000
     direct_vm.value = advance + fee + (3 * ATTO)
-    pool.record_recovery(DOCKET)
+    pool.record_recovery(DOCKET, f"receipt-{pool.transaction_history(0, 100)['total']}")
     direct_vm.value = 0
 
     member = "0x" + "aa" * 20
@@ -674,7 +674,7 @@ def test_claim_for_transfers_surplus_to_member(make_pool, direct_vm, direct_alic
 
     direct_vm.sender = direct_alice
     direct_vm.value = advance + fee + (3 * ATTO)
-    pool.record_recovery(DOCKET)
+    pool.record_recovery(DOCKET, f"receipt-{pool.transaction_history(0, 100)['total']}")
     direct_vm.value = 0
 
     assert int(pool.claimable_of(member)) == 3 * ATTO
@@ -708,7 +708,7 @@ def test_a_stranger_may_pay_an_advance_off_but_cannot_discharge_it_short(
     stranger = "0x" + "99" * 20
     direct_vm.sender = stranger
     direct_vm.value = 1
-    out = pool.record_recovery(DOCKET)
+    out = pool.record_recovery(DOCKET, f"receipt-{pool.transaction_history(0, 100)['total']}")
     direct_vm.value = 0
     # One wei buys a credit of one wei, and nothing else.
     assert out["status"] == "OUTSTANDING"
@@ -722,7 +722,7 @@ def test_a_stranger_may_pay_an_advance_off_but_cannot_discharge_it_short(
     # Paying the whole thing does work, from anybody.
     direct_vm.sender = stranger
     direct_vm.value = advance + fee - 1
-    assert pool.record_recovery(DOCKET)["status"] == "RECOVERED"
+    assert pool.record_recovery(DOCKET, f"receipt-{pool.transaction_history(0, 100)['total']}")["status"] == "RECOVERED"
     direct_vm.value = 0
 
 
@@ -743,13 +743,13 @@ def test_withdrawn_principal_fee_allocation(pool, direct_vm, direct_alice, direc
 
     direct_vm.sender = direct_alice
     direct_vm.value = advance + fee
-    pool.record_recovery(DOCKET)
+    pool.record_recovery(DOCKET, f"receipt-{pool.transaction_history(0, 100)['total']}")
     direct_vm.value = 0
 
     alice_cut = int(pool.position_of(str(direct_alice))["fees_earned_atto"])
     bob_cut = int(pool.position_of(str(direct_bob))["fees_earned_atto"])
-    assert alice_cut == (fee * 100) // 150
-    assert bob_cut == (fee * 50) // 150
+    assert abs(alice_cut - (fee * 100) // 150) <= 1
+    assert alice_cut + bob_cut == fee
 
 
 def test_full_withdrawal_receives_zero_fee_allocation(pool, direct_vm, direct_alice, direct_bob):
@@ -766,7 +766,7 @@ def test_full_withdrawal_receives_zero_fee_allocation(pool, direct_vm, direct_al
 
     direct_vm.sender = direct_alice
     direct_vm.value = advance + fee
-    pool.record_recovery(DOCKET)
+    pool.record_recovery(DOCKET, f"receipt-{pool.transaction_history(0, 100)['total']}")
     direct_vm.value = 0
 
     alice_cut = int(pool.position_of(str(direct_alice))["fees_earned_atto"])
@@ -793,7 +793,7 @@ def cycle(pool, vm, docket, payer):
     fee = (amount * 1200) // BPS
     vm.sender = payer
     vm.value = amount + fee
-    pool.record_recovery(docket)
+    pool.record_recovery(docket, f"receipt-{pool.transaction_history(0, 100)['total']}")
     vm.value = 0
     return fee
 
@@ -826,7 +826,7 @@ def test_fee_accrual_never_gives_back_withdrawn_principal(
     earned = 0
     for round_number in (1, 2, 3):
         fee = cycle(pool, direct_vm, f"OMB-2026-00000{round_number}", direct_alice)
-        earned += (fee * 50) // 150
+        earned += fee_share(pool, f"OMB-2026-00000{round_number}", direct_bob, fee)
 
         # The whole point. Fees are earned on 50 GEN and keep being earned on 50 GEN.
         assert active_of(pool, direct_bob) == 50 * ATTO
@@ -864,7 +864,7 @@ def test_a_withdrawal_takes_fees_first_and_then_principal(
     # principal back as whole again.
     second_fee = cycle(pool, direct_vm, "OMB-2026-000002", direct_alice)
     assert active_of(pool, direct_bob) == 90 * ATTO
-    assert fees_of(pool, direct_bob) == bob_fees + (second_fee * 90) // 190
+    assert fees_of(pool, direct_bob) == bob_fees + fee_share(pool, "OMB-2026-000002", direct_bob, second_fee)
     assert active_of(pool, direct_alice) == 100 * ATTO
 
 
@@ -886,7 +886,7 @@ def test_withdrawing_only_fees_leaves_principal_working(
 
     second_fee = cycle(pool, direct_vm, "OMB-2026-000002", direct_alice)
     assert active_of(pool, direct_bob) == 100 * ATTO
-    assert fees_of(pool, direct_bob) == bob_fees + (second_fee * 100) // 200
+    assert fees_of(pool, direct_bob) == bob_fees + fee_share(pool, "OMB-2026-000002", direct_bob, second_fee)
 
 
 def test_an_underwriter_who_left_earns_nothing_from_later_recoveries(
@@ -921,7 +921,7 @@ def test_depositing_again_after_a_withdrawal_adds_only_the_new_capital(
     pool.withdraw(str(50 * ATTO))
 
     first_fee = cycle(pool, direct_vm, "OMB-2026-000001", direct_alice)
-    bob_fees = (first_fee * 50) // 150
+    bob_fees = fee_share(pool, "OMB-2026-000001", direct_bob, first_fee)
     assert active_of(pool, direct_bob) == 50 * ATTO
 
     fund(pool, direct_vm, direct_bob, 30 * ATTO)
@@ -930,7 +930,7 @@ def test_depositing_again_after_a_withdrawal_adds_only_the_new_capital(
 
     second_fee = cycle(pool, direct_vm, "OMB-2026-000002", direct_alice)
     assert active_of(pool, direct_bob) == 80 * ATTO
-    assert fees_of(pool, direct_bob) == bob_fees + (second_fee * 80) // 180
+    assert fees_of(pool, direct_bob) == bob_fees + fee_share(pool, "OMB-2026-000002", direct_bob, second_fee)
 
 
 def test_active_principal_is_exactly_deposits_less_withdrawn_principal(
@@ -1019,7 +1019,7 @@ def test_the_member_may_settle_their_own_advance(
 
     direct_vm.sender = direct_bob
     direct_vm.value = advance + fee
-    out = pool.record_recovery(DOCKET)
+    out = pool.record_recovery(DOCKET, f"receipt-{pool.transaction_history(0, 100)['total']}")
     direct_vm.value = 0
 
     assert out["status"] == "RECOVERED"
@@ -1042,13 +1042,13 @@ def test_the_member_cannot_discharge_their_own_advance_cheaply(
 
     direct_vm.sender = direct_bob
     direct_vm.value = 1
-    out = pool.record_recovery(DOCKET)
+    out = pool.record_recovery(DOCKET, f"receipt-{pool.transaction_history(0, 100)['total']}")
     direct_vm.value = 0
 
     assert out["status"] == "OUTSTANDING"
     assert int(pool.pool_stats()["total_written_off_atto"]) == 0
     # The capital is still committed, so the ceiling still counts it.
-    assert int(pool.pool_stats()["outstanding_atto"]) == advance
+    assert int(pool.pool_stats()["outstanding_atto"]) == advance - 1
 
     # And the docket cannot be advanced against a second time either.
     with direct_vm.expect_revert("already been advanced against"):
@@ -1073,7 +1073,7 @@ def test_a_claim_reads_back_in_any_spelling(make_pool, direct_vm, direct_alice):
 
     direct_vm.sender = direct_alice
     direct_vm.value = advance + fee + (3 * ATTO)
-    pool.record_recovery(DOCKET)
+    pool.record_recovery(DOCKET, f"receipt-{pool.transaction_history(0, 100)['total']}")
     direct_vm.value = 0
 
     assert int(pool.claimable_of(mixed)) == 3 * ATTO
@@ -1183,7 +1183,7 @@ def test_a_loss_reduces_the_weight_a_position_carries_for_later_fees(
     fee = (advance * 1200) // BPS
     direct_vm.sender = direct_alice
     direct_vm.value = advance + fee
-    pool.record_recovery(second)
+    pool.record_recovery(second, "second-remittance")
     direct_vm.value = 0
 
     total_active = alice_active + bob_active
@@ -1193,3 +1193,93 @@ def test_a_loss_reduces_the_weight_a_position_carries_for_later_fees(
     assert int(pool.position_of(str(direct_bob))["fees_earned_atto"]) == (
         fee * bob_active
     ) // total_active
+
+
+def fee_share(pool, docket, who, fee):
+    weights = pool.get_advance(docket)["underwriting"]
+    remaining, total = fee, sum(weights.values())
+    for address, weight in weights.items():
+        share = remaining * weight // total if total else 0
+        if address == str(who).lower():
+            return share
+        remaining -= share
+        total -= weight
+    return 0
+
+
+def test_partial_recovery_preserves_equity_and_terms(pool, direct_vm, direct_alice, direct_owner):
+    fund(pool, direct_vm, direct_alice, 10 * ATTO)
+    amount = int(pool.advance(DOCKET)['amount_atto'])
+    direct_vm.sender = direct_owner
+    pool.set_terms(3500, 3000, 7000)
+    direct_vm.value = amount // 2
+    pool.record_recovery(DOCKET, 'insurer-remittance-1')
+    direct_vm.value = 0
+    stats = pool.pool_stats()
+    assert int(stats['total_value_governed_atto']) == 10 * ATTO
+    assert int(stats['outstanding_atto']) == amount - amount // 2
+    assert pool.get_advance(DOCKET)['fee_rate_bps'] == 1200
+
+
+def test_duplicate_partial_recovery_is_refused(pool, direct_vm, direct_alice):
+    fund(pool, direct_vm, direct_alice, 10 * ATTO)
+    pool.advance(DOCKET)
+    direct_vm.value = 1
+    pool.record_recovery(DOCKET, 'remittance-1')
+    before = pool.pool_stats()
+    with direct_vm.expect_revert('already processed'):
+        pool.record_recovery(DOCKET, 'remittance-1')
+    assert pool.pool_stats() == before
+
+
+def test_risk_is_reserved_and_late_deposit_does_not_earn_old_fee(pool, direct_vm, direct_alice, direct_bob):
+    fund(pool, direct_vm, direct_alice, 2 * ATTO)
+    amount = int(pool.advance(DOCKET)['amount_atto'])
+    fund(pool, direct_vm, direct_bob, 100 * ATTO)
+    direct_vm.sender = direct_alice
+    assert int(pool.position_of(str(direct_alice))['withdrawable_atto']) == 2 * ATTO - amount
+    with direct_vm.expect_revert('unreserved'):
+        pool.withdraw(str(2 * ATTO))
+    direct_vm.value = amount + amount * 1200 // BPS
+    pool.record_recovery(DOCKET, 'final-remittance')
+    direct_vm.value = 0
+    assert fees_of(pool, direct_bob) == 0
+    assert fees_of(pool, direct_alice) == amount * 1200 // BPS
+    assert pool.position_of(str(direct_alice))['reserved_atto'] == '0'
+
+
+def test_retry_requires_exact_returned_value_and_never_rebooks_advance(pool, direct_vm, direct_alice):
+    fund(pool, direct_vm, direct_alice, 10 * ATTO)
+    out = pool.advance(DOCKET)
+    payout_id = out['payout_id']
+    assert pool.get_payout(payout_id)['status'] == 'PENDING'
+    before = pool.pool_stats()
+    with direct_vm.expect_revert('funded refund'):
+        pool.retry_payout(payout_id)
+    with direct_vm.expect_revert('exact returned value'):
+        pool.refund_payout(payout_id)
+    direct_vm.value = int(out['amount_atto'])
+    pool.refund_payout(payout_id)
+    direct_vm.value = 0
+    assert pool.pool_stats()['free_capital_atto'] == before['free_capital_atto']
+    assert pool.get_payout(payout_id)['status'] == 'REFUNDED'
+    pool.retry_payout(payout_id)
+    assert pool.pool_stats() == before
+    assert pool.get_payout(payout_id)['attempt'] == 2
+    with direct_vm.expect_revert('funded refund'):
+        pool.retry_payout(payout_id)
+    with direct_vm.expect_revert('only the recipient'):
+        pool.acknowledge_payout(payout_id)
+
+
+def test_exact_rounding_with_zero_position_at_end(pool, direct_vm, direct_alice, direct_bob, direct_charlie, direct_owner):
+    fund(pool, direct_vm, direct_alice, 2)
+    fund(pool, direct_vm, direct_bob, 3)
+    fund(pool, direct_vm, direct_charlie, 1)
+    pool.withdraw('1')
+    pool.advance(DOCKET)
+    direct_vm.sender = direct_owner
+    pool.write_off(DOCKET, 'unrecoverable')
+    losses = sum(int(pool.position_of(str(w))['loss_borne_atto']) for w in (direct_alice, direct_bob, direct_charlie))
+    assert losses == int(pool.pool_stats()['total_written_off_atto'])
+    assert pool.position_of(str(direct_charlie))['loss_borne_atto'] == '0'
