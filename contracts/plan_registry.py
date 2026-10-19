@@ -330,6 +330,8 @@ class PlanRegistry(gl.Contract):
     active_count: u256
     total_refreshes: u256
     total_revisions: u256
+    policy_versions: TreeMap[str, DynArray[str]]
+    policy_events: DynArray[str]
 
     def __init__(self) -> None:
         self.owner = gl.message.sender_address
@@ -382,7 +384,7 @@ class PlanRegistry(gl.Contract):
         rule = self._rule_or_raise(plan_id)
         today = _chain_date()
         within = rule.effective_from <= today <= rule.effective_to
-        return {
+        result = {
             "plan_id": rule.plan_id,
             "insurer": rule.insurer,
             "plan_line": rule.plan_line,
@@ -409,6 +411,14 @@ class PlanRegistry(gl.Contract):
             "active": bool((not rule.retired) and within),
             "as_of": today,
         }
+        identity = {key: result[key] for key in (
+            "plan_id", "insurer", "plan_line", "family_id", "bulletin_number", "bulletin_title",
+            "bulletin_url", "fetch_mode", "state", "effective_from", "effective_to", "sbc_hash",
+            "cms_source_url", "cms_display_id", "guideline_url", "clause_sections", "content_hash", "retired")}
+        result["policy_digest"] = _digest(json.dumps(identity, sort_keys=True))
+        versions = self.policy_versions.get(plan_id)
+        result["policy_version"] = 0 if versions is None else len(versions)
+        return result
 
     @gl.public.view
     def is_rule_active(self, plan_id: str) -> bool:
@@ -485,6 +495,35 @@ class PlanRegistry(gl.Contract):
             index -= 1
         return out
 
+    def _policy_snapshot(self, plan_id: str, kind: str) -> None:
+        snapshot = self.rule_for(plan_id)
+        versions = self.policy_versions.get_or_insert_default(plan_id)
+        snapshot["policy_version"] = len(versions) + 1
+        snapshot["event"] = kind
+        snapshot["recorded_at"] = _chain_stamp()
+        snapshot["actor"] = str(gl.message.sender_address)
+        versions.append(json.dumps(snapshot, sort_keys=True))
+        self.policy_events.append(json.dumps({"plan_id": plan_id, "kind": kind,
+            "version": len(versions), "digest": snapshot["policy_digest"],
+            "at": _chain_stamp(), "actor": str(gl.message.sender_address)}, sort_keys=True))
+
+    @gl.public.view
+    def policy_history(self, plan_id: str, offset: int = 0, limit: int = 25) -> dict:
+        self._rule_or_raise(plan_id)
+        if offset < 0 or limit < 1 or limit > 100:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} invalid pagination")
+        versions = self.policy_versions.get(plan_id)
+        records = [] if versions is None else [json.loads(v) for v in versions]
+        records.reverse()
+        return {"total": len(records), "items": records[offset:offset + limit]}
+
+    @gl.public.view
+    def policy_version(self, plan_id: str, version: int) -> dict:
+        versions = self.policy_versions.get(plan_id)
+        if versions is None or version < 1 or version > len(versions):
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} unknown policy version")
+        return json.loads(versions[version - 1])
+
     # ------------------------------------------------------------------------ writes
 
     @gl.public.write
@@ -536,9 +575,12 @@ class PlanRegistry(gl.Contract):
 
         existing = self.rules.get(plan_id)
         is_new = existing is None
+        was_retired = bool(existing.retired) if existing is not None else False
+        old_family = str(existing.family_id) if existing is not None else ""
+        old_insurer = str(existing.insurer) if existing is not None else ""
 
         preserved_sbc = "" if existing is None else existing.sbc_hash
-        preserved_hash = "" if existing is None else existing.content_hash
+        preserved_hash = "" if existing is None or existing.bulletin_url != bulletin_url or existing.fetch_mode != fetch_mode else existing.content_hash
         preserved_prev = "" if existing is None else existing.previous_content_hash
         preserved_refreshed = "" if existing is None else existing.last_refreshed
         preserved_refreshes = u256(0) if existing is None else existing.refresh_count
@@ -580,9 +622,14 @@ class PlanRegistry(gl.Contract):
             # DynArray cannot be constructed by hand; storage hands you the empty one.
             self.family_members.get_or_insert_default(family_id).append(plan_id)
             self.insurer_members.get_or_insert_default(insurer).append(plan_id)
-        elif existing is not None and existing.retired:
+        elif was_retired:
             self.active_count = u256(int(self.active_count) + 1)
 
+        if not is_new and old_family != family_id:
+            self.family_members.get_or_insert_default(family_id).append(plan_id)
+        if not is_new and old_insurer != insurer:
+            self.insurer_members.get_or_insert_default(insurer).append(plan_id)
+        self._policy_snapshot(plan_id, "REGISTERED" if is_new else "REPLACED")
         return plan_id
 
     @gl.public.write
@@ -595,6 +642,7 @@ class PlanRegistry(gl.Contract):
         self._assert_curator()
         rule = self._rule_or_raise(plan_id)
         rule.sbc_hash = _require_sha256("sbc_hash", sbc_hash)
+        self._policy_snapshot(plan_id, "SBC_UPDATED")
 
     @gl.public.write
     def extend_rule(self, plan_id: str, effective_to: str) -> None:
@@ -605,6 +653,7 @@ class PlanRegistry(gl.Contract):
         if effective_to <= rule.effective_from:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} effective_to must fall after effective_from")
         rule.effective_to = effective_to
+        self._policy_snapshot(plan_id, "EXTENDED")
 
     @gl.public.write
     def retire_rule(self, plan_id: str) -> None:
@@ -613,6 +662,7 @@ class PlanRegistry(gl.Contract):
         if rule.retired:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} rule '{plan_id}' is already retired")
         rule.retired = True
+        self._policy_snapshot(plan_id, "RETIRED")
         if int(self.active_count) > 0:
             self.active_count = u256(int(self.active_count) - 1)
 
@@ -692,6 +742,12 @@ class PlanRegistry(gl.Contract):
                     sort_keys=True,
                 )
             )
+
+        if previous == "" or changed:
+            self._policy_snapshot(plan_id, "SOURCE_CHANGED" if changed else "SOURCE_OBSERVED")
+        else:
+            self.policy_events.append(json.dumps({"plan_id": plan_id, "kind": "CHECKED",
+                "at": stamp, "digest": fresh}, sort_keys=True))
 
         return {
             "plan_id": plan_id,

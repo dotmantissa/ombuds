@@ -1062,6 +1062,10 @@ class OmbudsCourt(gl.Contract):
     total_disputed_atto: u256
     total_overturned_atto: u256
     review_count: u256
+    filed_policy: TreeMap[str, str]
+    round_provenance: TreeMap[str, str]
+    verdict_history_log: TreeMap[str, DynArray[str]]
+    case_events: TreeMap[str, DynArray[str]]
 
     def __init__(self, registry_address: str, min_confidence: int, review_bond_atto: str) -> None:
         if not registry_address.startswith("0x") or len(registry_address) != 42:
@@ -1104,6 +1108,48 @@ class OmbudsCourt(gl.Contract):
         self.case_seq = u256(nxt)
         year = _chain_stamp()[:4]
         return f"OMB-{year}-{nxt:06d}"
+
+    def _event(self, docket: str, kind: str, details: dict) -> None:
+        events = self.case_events.get_or_insert_default(docket)
+        events.append(json.dumps({"sequence": len(events) + 1, "kind": kind,
+            "at": _chain_stamp(), "actor": _normalise_address(gl.message.sender_address),
+            "details": details}, sort_keys=True))
+
+    @gl.public.view
+    def case_history(self, docket: str, offset: int = 0, limit: int = 25) -> dict:
+        self._case_or_raise(docket)
+        if offset < 0 or limit < 1 or limit > 100:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} invalid pagination")
+        events = self.case_events.get(docket)
+        records = [] if events is None else [json.loads(v) for v in events]
+        return {"total": len(records), "items": records[offset:offset + limit]}
+
+    @gl.public.view
+    def verdict_history(self, docket: str, offset: int = 0, limit: int = 25) -> dict:
+        self._case_or_raise(docket)
+        if offset < 0 or limit < 1 or limit > 100:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} invalid pagination")
+        history = self.verdict_history_log.get(docket)
+        records = [] if history is None else [json.loads(v) for v in history]
+        return {"total": len(records), "items": records[offset:offset + limit],
+                "filed_policy": json.loads(self.filed_policy.get(docket, "{}"))}
+
+    @gl.public.write
+    def amend_evidence(self, docket: str, evidence_sha256: str, denial_rationale: str) -> None:
+        case = self._case_or_raise(docket)
+        caller = _normalise_address(gl.message.sender_address)
+        if caller not in (_normalise_address(case.filer), _normalise_address(self.owner)):
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} only the filer or authorized relayer may amend evidence")
+        if case.status not in ("FILED", "UNDER_REVIEW"):
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} evidence may only change before a pending panel")
+        if _HEX64_RE.fullmatch(evidence_sha256.lower()) is None or not 10 <= len(denial_rationale.strip()) <= 2000:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} invalid evidence commitment or rationale")
+        _assert_no_phi(denial_rationale, "denial_rationale")
+        before = case.evidence_sha256
+        case.evidence_sha256 = evidence_sha256.lower()
+        case.denial_rationale = denial_rationale
+        self._event(docket, "EVIDENCE_UPDATED", {"from_hash": before, "to_hash": case.evidence_sha256,
+            "rationale_sha256": _digest(denial_rationale), "panel_round": int(case.panel_round)})
 
     # ----------------------------------------------------------------------------- views
 
@@ -1175,6 +1221,7 @@ class OmbudsCourt(gl.Contract):
             # comparison against whatever the floor happens to be now.
             "confidence_floor": int(verdict.confidence_floor),
             "crosses_confidence_band": bool(verdict.clears_floor),
+            "provenance": json.loads(self.round_provenance.get(docket + ":" + str(int(verdict.panel_round)), "{}")),
         }
 
     @gl.public.view
@@ -1424,6 +1471,9 @@ class OmbudsCourt(gl.Contract):
         self.total_disputed_atto = u256(int(self.total_disputed_atto) + disputed)
 
         self.by_filer.get_or_insert_default(_normalise_address(filer)).append(docket)
+        self.filed_policy[docket] = json.dumps(rule, sort_keys=True)
+        self._event(docket, "FILED", {"evidence_sha256": evidence_sha256.lower(),
+            "policy_version": int(rule.get("policy_version", 0)), "policy_digest": str(rule.get("policy_digest", ""))})
 
         return docket
 
@@ -1617,6 +1667,17 @@ class OmbudsCourt(gl.Contract):
         stamped_fields["panel_round"] = round_number
         stamped_fields["bulletin_digest"] = str(outcome["bulletin_digest"])
         stamped_fields["cms_digest"] = str(outcome["cms_digest"])
+        provenance = {"policy": rule, "registry": str(self.registry),
+            "evidence_sha256": str(case.evidence_sha256),
+            "record_sha256": _digest(json.dumps({"rationale": rationale, "reason_code": reason_code,
+                "cpt": cpt_tuple, "icd10": icd_tuple, "service_month": service_month,
+                "state": state_code, "disputed_atto": str(disputed_atto_int)}, sort_keys=True)),
+            "bulletin_digest": str(outcome["bulletin_digest"]), "cms_digest": str(outcome["cms_digest"]),
+            "captured_at": stamp}
+        provenance_digest = _digest(json.dumps(provenance, sort_keys=True))
+        stamped_fields["provenance_sha256"] = provenance_digest
+        provenance["sha256"] = provenance_digest
+        self.round_provenance[docket + ":" + str(round_number)] = json.dumps(provenance, sort_keys=True)
         digest_payload = json.dumps(stamped_fields, sort_keys=True)
 
         # Read the outgoing verdict into plain locals FIRST. `previous` is a view onto the
@@ -1682,6 +1743,12 @@ class OmbudsCourt(gl.Contract):
         self._bump_status(entry_status, -1)
         case.status = settled_into
         self._bump_status(settled_into, 1)
+
+        snapshot = self.get_verdict(docket)
+        self.verdict_history_log.get_or_insert_default(docket).append(json.dumps(snapshot, sort_keys=True))
+        self._event(docket, "ADJUDICATED", {"panel_round": round_number, "digest": snapshot["digest"],
+            "ruling_digest": ruling_digest, "policy_version": int(rule.get("policy_version", 0)),
+            "provenance_sha256": provenance_digest, "status": settled_into})
 
         return {
             "docket": docket,

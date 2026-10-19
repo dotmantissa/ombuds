@@ -1810,3 +1810,39 @@ def test_a_second_panel_that_decides_differently_still_frees_the_bond(
     assert out["verdict_changed"] is True
     assert out["bond_returned"] is True
     assert int(court.bond_of(str(direct_bob))) == ATTO // 4
+
+
+def test_appeal_preserves_exact_original_evidence_and_verdict(court, direct_vm, direct_alice, aetna_0157, cms_100_1):
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court)
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(real_quote(aetna_0157)))
+    court.adjudicate(docket)
+    original = court.get_verdict(docket)
+    direct_vm.value = ATTO // 4
+    court.request_review(docket)
+    direct_vm.value = 0
+    court.amend_evidence(docket, 'b' * 64, CLEAN_RATIONALE + ' The authorization criterion was satisfied.')
+    direct_vm.clear_mocks()
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(real_quote(aetna_0157), overturn=False))
+    court.adjudicate(docket)
+    history = court.verdict_history(docket)
+    assert history['total'] == 2
+    assert history['items'][0] == original
+    assert history['items'][0]['provenance']['evidence_sha256'] == 'a' * 64
+    assert history['items'][1]['provenance']['evidence_sha256'] == 'b' * 64
+    assert history['items'][0]['provenance']['policy']['bulletin_url'] == AETNA_0157
+    assert history['items'][0]['provenance']['sha256'] != history['items'][1]['provenance']['sha256']
+    assert [e['kind'] for e in court.case_history(docket)['items']] == ['FILED', 'ADJUDICATED', 'EVIDENCE_UPDATED', 'ADJUDICATED']
+
+
+def test_evidence_amendment_requires_pending_panel_and_authority(court, direct_vm, direct_alice, direct_bob, aetna_0157, cms_100_1):
+    direct_vm.sender = direct_alice
+    docket = file_clean_case(court)
+    direct_vm.sender = direct_bob
+    with direct_vm.expect_revert('only the filer'):
+        court.amend_evidence(docket, 'b' * 64, CLEAN_RATIONALE)
+    direct_vm.sender = direct_alice
+    arm(direct_vm, aetna_0157, cms_100_1, verdict_json(real_quote(aetna_0157)))
+    court.adjudicate(docket)
+    with direct_vm.expect_revert('before a pending panel'):
+        court.amend_evidence(docket, 'b' * 64, CLEAN_RATIONALE)

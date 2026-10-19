@@ -395,3 +395,30 @@ def test_ownership_transfers_and_the_old_owner_loses_control(
     direct_vm.sender = direct_bob
     registry.set_curator(str(direct_charlie), True)
     assert registry.is_curator(str(direct_charlie)) is True
+
+
+def test_policy_versions_preserve_registration_extension_and_retirement(registry):
+    plan = register_bariatric(registry)
+    first = registry.policy_version(plan, 1)
+    registry.extend_rule(plan, '2028-01-01')
+    registry.set_sbc_hash(plan, 'b' * 64)
+    registry.retire_rule(plan)
+    history = registry.policy_history(plan)
+    assert history['total'] == 4
+    assert [v['event'] for v in history['items']] == ['RETIRED', 'SBC_UPDATED', 'EXTENDED', 'REGISTERED']
+    assert registry.policy_version(plan, 1) == first
+    assert first['effective_to'] == '2027-01-01'
+    assert history['items'][0]['policy_digest'] != first['policy_digest']
+    assert len({v['policy_digest'] for v in history['items']}) == 4
+
+
+def test_monitoring_unchanged_source_does_not_invent_policy_revision(registry, direct_vm, aetna_0157):
+    plan = register_bariatric(registry)
+    serve(direct_vm, AETNA_0157, aetna_0157)
+    registry.refresh_rule(plan)
+    version = registry.rule_for(plan)['policy_version']
+    digest = registry.rule_for(plan)['policy_digest']
+    registry.refresh_rule(plan)
+    assert registry.rule_for(plan)['policy_version'] == version
+    assert registry.rule_for(plan)['policy_digest'] == digest
+    assert registry.policy_history(plan)['items'][0]['event'] == 'SOURCE_OBSERVED'
