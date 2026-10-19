@@ -18,7 +18,7 @@ export async function memberOperations(memberId: string, offset = 0) {
   await migrate();
   const rows = (await sql()`SELECT * FROM chain_operations WHERE member_id = ${memberId}
     ORDER BY created_at DESC LIMIT 25 OFFSET ${offset}`) as Operation[];
-  for (const row of rows.filter((r) => r.tx_hash && ['PENDING', 'EXECUTED'].includes(r.status)).slice(0, 5)) {
+  for (const row of rows.filter((r) => r.tx_hash && (['PENDING', 'EXECUTED'].includes(r.status) || (r.method === 'file_case' && !r.docket && r.status === 'FINALIZED'))).slice(0, 5)) {
     try {
       const receipt = await getTransaction(row.tx_hash as TransactionHash);
       const status = operationOutcome(receipt);

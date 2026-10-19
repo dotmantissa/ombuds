@@ -69,7 +69,8 @@ export async function trackedWrite(
 
 export function existingOperationResponse(error: unknown): Response | null {
   if (!(error instanceof ExistingOperation)) return null;
-  return Response.json({ pending: !['FAILED', 'EXECUTED'].includes(error.operation.status),
+  if (error.operation.status === 'FAILED' && !error.conflict) return Response.json({ error: 'The previous transaction failed. You may start a new attempt after reviewing its receipt.', txHash: error.operation.tx_hash }, { status: 422 });
+  return Response.json({ pending: !['FAILED', 'EXECUTED', 'FINALIZED'].includes(error.operation.status),
     status: error.operation.status, txHash: error.operation.tx_hash, operationId: error.operation.id,
     message: error.message }, { status: error.conflict ? 409 : 202 });
 }

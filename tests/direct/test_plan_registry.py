@@ -422,3 +422,27 @@ def test_monitoring_unchanged_source_does_not_invent_policy_revision(registry, d
     assert registry.rule_for(plan)['policy_version'] == version
     assert registry.rule_for(plan)['policy_digest'] == digest
     assert registry.policy_history(plan)['items'][0]['event'] == 'SOURCE_OBSERVED'
+
+
+def test_policy_active_count_tracks_calendar_expiry(registry, direct_vm):
+    register_bariatric(registry, effective_from='2025-01-01', effective_to='2025-12-31')
+    assert registry.registry_stats()['active_count'] == 0
+    assert registry.registry_stats()['unretired_count'] == 1
+
+
+def test_curator_access_is_case_insensitive(registry, direct_vm, direct_owner, direct_alice):
+    direct_vm.sender = direct_owner
+    registry.set_curator(str(direct_alice), True)
+    assert registry.is_curator(str(direct_alice).lower())
+    direct_vm.sender = direct_alice
+    register_bariatric(registry)
+    assert registry.registry_stats()['rule_count'] == 1
+
+
+def test_reactivation_updates_counts_and_keeps_policy_history(registry):
+    plan = register_bariatric(registry)
+    registry.retire_rule(plan)
+    assert registry.registry_stats()['active_count'] == 0
+    register_bariatric(registry)
+    assert registry.registry_stats()['active_count'] == 1
+    assert registry.policy_history(plan)['total'] == 3

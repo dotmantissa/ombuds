@@ -49,6 +49,7 @@ import json
 import re
 import hashlib
 from dataclasses import dataclass
+from datetime import date
 
 from genlayer import *
 
@@ -286,6 +287,10 @@ def _chain_stamp() -> str:
 def _require_iso_date(label: str, value: str) -> str:
     if _ISO_DATE_RE.match(value) is None:
         raise gl.vm.UserError(f"{ERROR_EXPECTED} {label} must be an ISO date, got '{value}'")
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        raise gl.vm.UserError(f"{ERROR_EXPECTED} {label} must be a valid calendar date")
     return value
 
 
@@ -339,15 +344,15 @@ class PlanRegistry(gl.Contract):
         self.active_count = u256(0)
         self.total_refreshes = u256(0)
         self.total_revisions = u256(0)
-        key = str(gl.message.sender_address)
+        key = str(gl.message.sender_address).lower()
         self.curators[key] = True
         self.curator_list.append(key)
 
     # ---------------------------------------------------------------- access control
 
     def _assert_curator(self) -> None:
-        caller = str(gl.message.sender_address)
-        if caller == str(self.owner):
+        caller = str(gl.message.sender_address).lower()
+        if caller == str(self.owner).lower():
             return
         if not self.curators.get(caller, False):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} caller is not a registry curator")
@@ -370,7 +375,8 @@ class PlanRegistry(gl.Contract):
 
     @gl.public.view
     def is_curator(self, address: str) -> bool:
-        if address == str(self.owner):
+        address = address.strip().lower()
+        if address == str(self.owner).lower():
             return True
         return bool(self.curators.get(address, False))
 
@@ -463,20 +469,21 @@ class PlanRegistry(gl.Contract):
         bucket = self.family_members.get(family_id)
         if bucket is None:
             return []
-        return [p for p in bucket]
+        return list(dict.fromkeys(p for p in bucket if self.rules[p].family_id == family_id))
 
     @gl.public.view
     def plans_for_insurer(self, insurer: str) -> list:
         bucket = self.insurer_members.get(insurer)
         if bucket is None:
             return []
-        return [p for p in bucket]
+        return list(dict.fromkeys(p for p in bucket if self.rules[p].insurer == insurer))
 
     @gl.public.view
     def registry_stats(self) -> dict:
         return {
             "rule_count": int(self.rule_count),
-            "active_count": int(self.active_count),
+            "active_count": sum(1 for p in self.plan_ids if self.is_rule_active(p)),
+            "unretired_count": int(self.active_count),
             "total_refreshes": int(self.total_refreshes),
             "total_revisions": int(self.total_revisions),
             "curator_count": len(self.curator_list),
@@ -671,6 +678,13 @@ class PlanRegistry(gl.Contract):
         self._assert_owner()
         if not address.startswith("0x") or len(address) != 42:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} address must be a 0x prefixed 20 byte address")
+        try:
+            int(address[2:], 16)
+        except ValueError:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} invalid curator address")
+        if address.lower() == "0x" + "0" * 40:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} zero curator address")
+        address = address.lower()
         known = self.curators.get(address)
         self.curators[address] = enabled
         if known is None:
