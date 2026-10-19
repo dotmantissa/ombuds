@@ -1,9 +1,10 @@
+import { memberOwnsCase } from '@/lib/db';
+import { trackedWrite, existingOperationResponse } from '@/lib/operations';
 import { updateCaseStatus } from '@/lib/db';
 import {
   ombudsCourtAddress,
   readContract,
   ReceiptTimeoutError,
-  writeContract,
 } from '@/lib/genlayer';
 import { authErrorResponse, requireMember } from '@/lib/privy';
 
@@ -20,8 +21,9 @@ const DOCKET = /^OMB-\d{4}-\d{6}$/;
  * right. The relayer posts the bond so the member does not have to hold a token.
  */
 export async function POST(req: Request, context: { params: Promise<{ docket: string }> }) {
+  let member;
   try {
-    await requireMember(req);
+    member = await requireMember(req);
   } catch (err) {
     return authErrorResponse(err);
   }
@@ -32,6 +34,14 @@ export async function POST(req: Request, context: { params: Promise<{ docket: st
   }
 
   const court = ombudsCourtAddress();
+  const current = await readContract<{ status: string; panel_round: number }>({ address: court, functionName: 'get_case', args: [docket] });
+  if (!(await memberOwnsCase(member.id, docket))) {
+    return Response.json({ error: 'Only the case owner can request a sponsored appeal.' }, { status: 403 });
+  }
+  if (current.panel_round >= 3) {
+    return Response.json({ error: 'Two sponsored appeals have already been used for this case. Further appeals require a directly funded bond.' }, { status: 409 });
+  }
+
 
   const config = await readContract<{ review_bond_atto: string }>({
     address: court,
@@ -41,13 +51,15 @@ export async function POST(req: Request, context: { params: Promise<{ docket: st
 
   let write;
   try {
-    write = await writeContract({
+    write = await trackedWrite(member.id, req.headers.get('idempotency-key') ?? `review_${docket}_${current.panel_round}`, {
       address: court,
       functionName: 'request_review',
       args: [docket],
       value: bond,
-    });
+    }, docket);
   } catch (err) {
+    const existing = existingOperationResponse(err);
+    if (existing) return existing;
     if (err instanceof ReceiptTimeoutError) {
       // The status is deliberately left alone. We know the escalation was sent,
       // not that the bond was accepted, and claiming UNDER_REVIEW before the
@@ -64,7 +76,7 @@ export async function POST(req: Request, context: { params: Promise<{ docket: st
         { status: 202 },
       );
     }
-    throw err;
+    return Response.json({ error: 'The transaction could not be confirmed. Check its history before trying again.' }, { status: 502 });
   }
 
   if (!write.ok) {

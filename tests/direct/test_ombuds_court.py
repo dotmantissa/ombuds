@@ -1832,7 +1832,7 @@ def test_appeal_preserves_exact_original_evidence_and_verdict(court, direct_vm, 
     assert history['items'][1]['provenance']['evidence_sha256'] == 'b' * 64
     assert history['items'][0]['provenance']['policy']['bulletin_url'] == AETNA_0157
     assert history['items'][0]['provenance']['sha256'] != history['items'][1]['provenance']['sha256']
-    assert [e['kind'] for e in court.case_history(docket)['items']] == ['FILED', 'ADJUDICATED', 'EVIDENCE_UPDATED', 'ADJUDICATED']
+    assert [e['kind'] for e in court.case_history(docket)['items']] == ['FILED', 'ADJUDICATED', 'APPEAL_OPENED', 'EVIDENCE_UPDATED', 'ADJUDICATED']
 
 
 def test_evidence_amendment_requires_pending_panel_and_authority(court, direct_vm, direct_alice, direct_bob, aetna_0157, cms_100_1):
@@ -1846,3 +1846,65 @@ def test_evidence_amendment_requires_pending_panel_and_authority(court, direct_v
     court.adjudicate(docket)
     with direct_vm.expect_revert('before a pending panel'):
         court.amend_evidence(docket, 'b' * 64, CLEAN_RATIONALE)
+
+
+def test_appeal_after_advance_keeps_financial_state(court, direct_vm, direct_owner, direct_alice, direct_bob, aetna_0157, cms_100_1):
+    direct_vm.sender = direct_alice
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+    direct_vm.sender = direct_owner
+    court.set_pool(str(direct_bob))
+    direct_vm.sender = direct_bob
+    court.note_advance(docket, str(ATTO))
+    court.note_advance(docket, str(ATTO))  # safe asynchronous duplicate
+    direct_vm.sender = direct_alice
+    direct_vm.value = ATTO // 4
+    court.request_review(docket)
+    direct_vm.value = 0
+    court.resolve_review(docket)
+    assert court.get_case(docket)['status'] == 'ADVANCED'
+    assert court.get_case(docket)['advanced_atto'] == str(ATTO)
+    direct_vm.sender = direct_bob
+    court.mark_settled(docket, str(ATTO))
+    court.mark_settled(docket, str(ATTO))
+    assert court.court_stats()['statuses']['SETTLED'] == 1
+
+
+def test_evidence_only_change_does_not_award_bond(court, direct_vm, direct_alice, aetna_0157, cms_100_1):
+    direct_vm.sender = direct_alice
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+    direct_vm.value = ATTO // 4
+    court.request_review(docket)
+    direct_vm.value = 0
+    court.amend_evidence(docket, 'b' * 64, CLEAN_RATIONALE)
+    court.adjudicate(docket)
+    out = court.resolve_review(docket)
+    assert out['verdict_changed'] is False
+    assert out['bond_returned'] is False
+    stats = court.court_stats()
+    assert stats['bond_received_atto'] == stats['bond_forfeited_atto'] == str(ATTO // 4)
+    assert stats['bond_claimable_atto'] == '0'
+
+
+def test_bond_custody_and_funded_retry(court, direct_vm, direct_alice, aetna_0157, cms_100_1):
+    direct_vm.sender = direct_alice
+    docket = _adjudicated(court, direct_vm, aetna_0157, cms_100_1)
+    direct_vm.value = ATTO // 4
+    court.request_review(docket)
+    direct_vm.value = 0
+    abandoned = court.resolve_review(docket)
+    assert abandoned['verdict_changed'] is False
+    assert abandoned['bond_returned'] is True
+    stats = court.court_stats()
+    assert stats['bond_claimable_atto'] == stats['bond_received_atto']
+    court.withdraw_bond()
+    payment = court.bond_payment_history(str(direct_alice))['items'][0]
+    assert payment['status'] == 'PENDING'
+    assert court.court_stats()['bond_claimable_atto'] == '0'
+    with direct_vm.expect_revert('funded refund'):
+        court.retry_bond_payment(payment['id'])
+    direct_vm.value = ATTO // 4
+    court.refund_bond_payment(payment['id'])
+    direct_vm.value = 0
+    court.retry_bond_payment(payment['id'])
+    assert court.bond_payment_history(str(direct_alice))['items'][0]['attempt'] == 2
+    assert court.court_stats()['bond_paid_atto'] == str(ATTO // 4)

@@ -1,3 +1,4 @@
+import { trackedWrite, existingOperationResponse } from './operations';
 /**
  * Filing a case: what the chain is told, and who the money belongs to.
  *
@@ -353,7 +354,11 @@ export async function fileCase(
 
   let write: WriteResult;
   try {
-    write = await deps.writeContract({
+    const submit = deps === liveFilingDeps
+      ? (params: Parameters<typeof writeContract>[0]) => trackedWrite(member.id,
+          req.headers.get('idempotency-key') ?? `file_${evidence.sha256}`, params)
+      : deps.writeContract;
+    write = await submit({
       address: deps.courtAddress(),
       functionName: 'file_case',
       args: [
@@ -371,6 +376,8 @@ export async function fileCase(
       ],
     });
   } catch (err) {
+    const existing = existingOperationResponse(err);
+    if (existing) return existing;
     if (err instanceof ReceiptTimeoutError) {
       // The docket number comes back in the receipt, so without a receipt there
       // is no docket to hand over and nothing is written to the index. The

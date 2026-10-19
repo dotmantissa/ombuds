@@ -186,6 +186,14 @@ _ENTITIES = (
 CMS_RULE_FIELDS = ("item_service_description", "indications_limitations", "reasons_for_denial")
 
 
+@gl.evm.contract_interface
+class Wallet:
+    class View:
+        pass
+    class Write:
+        pass
+
+
 @allow_storage
 @dataclass
 class Case:
@@ -1066,6 +1074,13 @@ class OmbudsCourt(gl.Contract):
     round_provenance: TreeMap[str, str]
     verdict_history_log: TreeMap[str, DynArray[str]]
     case_events: TreeMap[str, DynArray[str]]
+    bond_claimable_total_atto: u256
+    bond_forfeited_atto: u256
+    bond_paid_atto: u256
+    bond_refunded_atto: u256
+    bond_received_atto: u256
+    bond_payouts: TreeMap[str, str]
+    bond_payment_ids: DynArray[str]
 
     def __init__(self, registry_address: str, min_confidence: int, review_bond_atto: str) -> None:
         if not registry_address.startswith("0x") or len(registry_address) != 42:
@@ -1077,7 +1092,10 @@ class OmbudsCourt(gl.Contract):
         self.registry = Address(registry_address)
         self.pool = Address("0x" + "00" * 20)
         self.min_confidence = u256(confidence)
-        self.review_bond_atto = u256(int(review_bond_atto))
+        amount = int(review_bond_atto)
+        if amount <= 0:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} review bond must be positive")
+        self.review_bond_atto = u256(amount)
         self.case_seq = u256(0)
         self.verdict_count = u256(0)
         self.overturn_count = u256(0)
@@ -1343,6 +1361,11 @@ class OmbudsCourt(gl.Contract):
             "total_disputed_atto": str(int(self.total_disputed_atto)),
             "total_overturned_atto": str(int(self.total_overturned_atto)),
             "bond_held_atto": str(int(self.bond_held_atto)),
+            "bond_claimable_atto": str(int(self.bond_claimable_total_atto)),
+            "bond_forfeited_atto": str(int(self.bond_forfeited_atto)),
+            "bond_paid_atto": str(int(self.bond_paid_atto)),
+            "bond_refunded_atto": str(int(self.bond_refunded_atto)),
+            "bond_received_atto": str(int(self.bond_received_atto)),
             "grounds": grounds,
             "statuses": statuses,
         }
@@ -1659,11 +1682,11 @@ class OmbudsCourt(gl.Contract):
             "clause_id": str(outcome["clause_id"]),
             "recoverable_band": band,
             "clears_floor": clears_floor,
-            "evidence_sha256": case.evidence_sha256,
         }
         ruling_digest = _digest(json.dumps(ruling_fields, sort_keys=True))
 
         stamped_fields = dict(ruling_fields)
+        stamped_fields["evidence_sha256"] = str(case.evidence_sha256)
         stamped_fields["panel_round"] = round_number
         stamped_fields["bulletin_digest"] = str(outcome["bulletin_digest"])
         stamped_fields["cms_digest"] = str(outcome["cms_digest"])
@@ -1819,9 +1842,13 @@ class OmbudsCourt(gl.Contract):
         # second panel actually change anything" a question the contract can answer by
         # itself.
         case.pre_review_ruling = str(verdict.ruling_digest)
+        self._event(docket, "APPEAL_OPENED", {"round": int(case.panel_round),
+            "bond_atto": str(posted), "sponsor": requester, "original_digest": verdict.digest,
+            "original_ruling": verdict.ruling_digest, "financial_exposure_atto": str(int(case.advanced_atto))})
         self._bump_status("UNDER_REVIEW", 1)
         self.review_count = u256(int(self.review_count) + 1)
         self.bond_held_atto = u256(int(self.bond_held_atto) + posted)
+        self.bond_received_atto = u256(int(self.bond_received_atto) + posted)
 
         return {
             "docket": docket,
@@ -1845,6 +1872,11 @@ class OmbudsCourt(gl.Contract):
         if to_requester and requester != "":
             current = int(self.bond_claimable.get(requester, u256(0)))
             self.bond_claimable[requester] = u256(current + bond)
+            self.bond_claimable_total_atto = u256(int(self.bond_claimable_total_atto) + bond)
+        else:
+            self.bond_forfeited_atto = u256(int(self.bond_forfeited_atto) + bond)
+        self._event(case.docket, "BOND_RETURNED" if to_requester else "BOND_FORFEITED",
+            {"recipient": requester if to_requester else "court", "amount_atto": str(bond)})
         held = int(self.bond_held_atto) - bond
         self.bond_held_atto = u256(held if held > 0 else 0)
         case.review_bond_atto = u256(0)
@@ -1898,20 +1930,27 @@ class OmbudsCourt(gl.Contract):
             changed = current_ruling != str(case.pre_review_ruling)
         else:
             # Never heard, so nobody was shown to be wrong. The bond goes home.
-            changed = True
+            changed = False
 
-        bond = self._release_bond(case, changed)
+        return_bond = changed or not heard
+        prior_ruling = str(case.pre_review_ruling)
+        bond = self._release_bond(case, return_bond)
         self._bump_status(entry_status, -1)
-        case.status = "VERDICT"
-        self._bump_status("VERDICT", 1)
+        next_status = "ADVANCED" if int(case.advanced_atto) > 0 else "VERDICT"
+        case.status = next_status
+        self._bump_status(next_status, 1)
+        self._event(docket, "APPEAL_RESOLVED" if heard else "APPEAL_ABANDONED",
+            {"verdict_changed": changed, "bond_returned": return_bond, "bond_atto": str(bond),
+             "prior_ruling": prior_ruling, "status": next_status,
+             "exposure_preserved_atto": str(int(case.advanced_atto))})
 
         return {
             "docket": docket,
             "heard": heard,
             "verdict_changed": bool(changed),
-            "bond_returned": bool(changed),
+            "bond_returned": return_bond,
             "bond_atto": str(bond),
-            "awarded_to": requester if changed else str(self.owner),
+            "awarded_to": requester if return_bond else "court",
         }
 
     @gl.public.write
@@ -1927,10 +1966,53 @@ class OmbudsCourt(gl.Contract):
         if owed <= 0:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} nothing is owed to {target}")
         self.bond_claimable[target] = u256(0)
-        # on="accepted", not "finalized". See the note in advance_pool.py for what is
-        # measured about delivery on studionet under either setting.
-        gl.get_contract_at(Address(target)).emit_transfer(value=u256(owed), on="accepted")
+        self.bond_claimable_total_atto = u256(int(self.bond_claimable_total_atto) - owed)
+        self.bond_paid_atto = u256(int(self.bond_paid_atto) + owed)
+        payment_id = str(len(self.bond_payment_ids) + 1)
+        payment = {"id": payment_id, "recipient": target, "amount_atto": str(owed),
+            "status": "PENDING", "attempt": 1, "at": _chain_stamp()}
+        self.bond_payouts[payment_id] = json.dumps(payment, sort_keys=True)
+        self.bond_payment_ids.append(payment_id)
+        Wallet(Address(target)).emit_transfer(value=u256(owed))
         return str(owed)
+
+    @gl.public.view
+    def bond_payment_history(self, address: str, offset: int = 0, limit: int = 25) -> dict:
+        if offset < 0 or limit < 1 or limit > 100:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} invalid pagination")
+        target = _normalise_address(address)
+        records = [json.loads(self.bond_payouts[i]) for i in self.bond_payment_ids]
+        records = [r for r in records if r["recipient"] == target]
+        records.reverse()
+        return {"total": len(records), "items": records[offset:offset + limit]}
+
+    @gl.public.write.payable
+    def refund_bond_payment(self, payment_id: str) -> None:
+        raw = self.bond_payouts.get(payment_id)
+        if raw is None:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} unknown bond payment")
+        payment = json.loads(raw)
+        amount = int(payment["amount_atto"])
+        if payment["status"] != "PENDING" or int(gl.message.value) != amount:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} exact returned value required for a pending bond payment")
+        payment["status"] = "REFUNDED"
+        self.bond_payouts[payment_id] = json.dumps(payment, sort_keys=True)
+        self.bond_refunded_atto = u256(int(self.bond_refunded_atto) + amount)
+
+    @gl.public.write
+    def retry_bond_payment(self, payment_id: str) -> None:
+        raw = self.bond_payouts.get(payment_id)
+        if raw is None:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} unknown bond payment")
+        payment = json.loads(raw)
+        if payment["status"] != "REFUNDED":
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} a funded refund is required")
+        amount = int(payment["amount_atto"])
+        payment["status"] = "PENDING"
+        payment["attempt"] += 1
+        self.bond_payouts[payment_id] = json.dumps(payment, sort_keys=True)
+        self.bond_refunded_atto = u256(int(self.bond_refunded_atto) - amount)
+        Wallet(Address(payment["recipient"])).emit_transfer(value=u256(amount))
 
     @gl.public.write
     def note_advance(self, docket: str, advanced_atto: str) -> None:
@@ -1943,6 +2025,8 @@ class OmbudsCourt(gl.Contract):
         if amount <= 0:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} the advance must be above zero")
         if int(case.advanced_atto) > 0:
+            if int(case.advanced_atto) == amount:
+                return
             raise gl.vm.UserError(f"{ERROR_EXPECTED} '{docket}' has already been advanced against")
         if entry_status in REVIEW_STATUSES:
             # is_advanceable already says no, and the pool asks first. This is the second
@@ -1961,6 +2045,7 @@ class OmbudsCourt(gl.Contract):
                 f"{ERROR_EXPECTED} '{docket}' has no verdict, so there is nothing to advance against"
             )
         case.advanced_atto = u256(amount)
+        self._event(docket, "ADVANCE_RECORDED", {"amount_atto": str(amount), "delivery": "UNVERIFIED"})
         self._bump_status(entry_status, -1)
         case.status = "ADVANCED"
         self._bump_status("ADVANCED", 1)
@@ -1975,6 +2060,8 @@ class OmbudsCourt(gl.Contract):
             raise gl.vm.UserError(f"{ERROR_EXPECTED} only the court or the pool may settle a case")
         case = self._case_or_raise(docket)
         entry_status = str(case.status)
+        if entry_status == "SETTLED" and int(case.settled_atto) == int(settled_atto):
+            return
         if entry_status in TERMINAL_STATUSES:
             raise gl.vm.UserError(f"{ERROR_EXPECTED} '{docket}' is already closed")
         if entry_status == "FILED":
@@ -1997,6 +2084,7 @@ class OmbudsCourt(gl.Contract):
         case.settled_atto = u256(amount)
         case.status = "SETTLED"
         self._bump_status("SETTLED", 1)
+        self._event(docket, "SETTLED", {"amount_atto": str(amount)})
 
     @gl.public.write
     def reject_case(self, docket: str, reason: str) -> None:
@@ -2014,6 +2102,8 @@ class OmbudsCourt(gl.Contract):
         self._bump_status(entry_status, -1)
         case.status = "REJECTED"
         self._bump_status("REJECTED", 1)
+        _assert_no_phi(reason, "reason")
+        self._event(docket, "REJECTED", {"reason": reason})
 
     @gl.public.write
     def set_pool(self, pool_address: str) -> None:
@@ -2032,7 +2122,10 @@ class OmbudsCourt(gl.Contract):
     @gl.public.write
     def set_review_bond(self, review_bond_atto: str) -> None:
         self._assert_owner()
-        self.review_bond_atto = u256(int(review_bond_atto))
+        amount = int(review_bond_atto)
+        if amount <= 0:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} review bond must be positive")
+        self.review_bond_atto = u256(amount)
 
     @gl.public.write
     def set_registry(self, registry_address: str) -> None:

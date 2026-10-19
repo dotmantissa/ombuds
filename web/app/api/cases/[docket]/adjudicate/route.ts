@@ -1,10 +1,10 @@
+import { trackedWrite, existingOperationResponse } from '@/lib/operations';
 import { recordVerdict, updateCaseStatus } from '@/lib/db';
 import {
   type ChainAddress,
   ombudsCourtAddress,
   readContract,
   ReceiptTimeoutError,
-  writeContract,
 } from '@/lib/genlayer';
 import { authErrorResponse, requireMember } from '@/lib/privy';
 import { isCaseStatus } from '@/types/ombuds';
@@ -48,8 +48,9 @@ async function mirrorChainStatus(court: ChainAddress, docket: string, txHash?: s
  * the decision, the ground, the clause and the band. That takes as long as it takes.
  */
 export async function POST(req: Request, context: { params: Promise<{ docket: string }> }) {
+  let member;
   try {
-    await requireMember(req);
+    member = await requireMember(req);
   } catch (err) {
     return authErrorResponse(err);
   }
@@ -60,16 +61,19 @@ export async function POST(req: Request, context: { params: Promise<{ docket: st
   }
 
   const court = ombudsCourtAddress();
-  await updateCaseStatus(docket, 'ADJUDICATING').catch(() => undefined);
+  const current = await readContract<{ status: string; panel_round: number }>({ address: court, functionName: 'get_case', args: [docket] });
+
 
   let write;
   try {
-    write = await writeContract({
+    write = await trackedWrite(member.id, req.headers.get('idempotency-key') ?? `adjudicate_${docket}_${current.panel_round}`, {
       address: court,
       functionName: 'adjudicate',
       args: [docket],
-    });
+    }, docket);
   } catch (err) {
+    const existing = existingOperationResponse(err);
+    if (existing) return existing;
     if (err instanceof ReceiptTimeoutError) {
       // The case stays ADJUDICATING, which is exactly the truth: the panel has it
       // and has not finished. The case page reads the verdict off the contract,
@@ -88,7 +92,7 @@ export async function POST(req: Request, context: { params: Promise<{ docket: st
       );
     }
     await mirrorChainStatus(court, docket);
-    throw err;
+    return Response.json({ error: 'The transaction could not be confirmed. Check its history before trying again.' }, { status: 502 });
   }
 
   if (!write.ok) {

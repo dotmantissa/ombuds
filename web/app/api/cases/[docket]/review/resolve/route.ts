@@ -1,9 +1,10 @@
+import { memberOwnsCase } from '@/lib/db';
+import { trackedWrite, existingOperationResponse } from '@/lib/operations';
 import { updateCaseStatus } from '@/lib/db';
 import {
   ombudsCourtAddress,
   readContract,
   ReceiptTimeoutError,
-  writeContract,
 } from '@/lib/genlayer';
 import { authErrorResponse, requireMember } from '@/lib/privy';
 import { isCaseStatus } from '@/types/ombuds';
@@ -25,8 +26,9 @@ const DOCKET = /^OMB-\d{4}-\d{6}$/;
  * somebody else's bond sitting in the contract indefinitely.
  */
 export async function POST(req: Request, context: { params: Promise<{ docket: string }> }) {
+  let member;
   try {
-    await requireMember(req);
+    member = await requireMember(req);
   } catch (err) {
     return authErrorResponse(err);
   }
@@ -37,15 +39,22 @@ export async function POST(req: Request, context: { params: Promise<{ docket: st
   }
 
   const court = ombudsCourtAddress();
+  const current = await readContract<{ status: string; panel_round: number }>({ address: court, functionName: 'get_case', args: [docket] });
+  if (current.status === 'UNDER_REVIEW' && !(await memberOwnsCase(member.id, docket))) {
+    return Response.json({ error: 'Only the case owner can abandon a sponsored appeal before it is heard.' }, { status: 403 });
+  }
+
 
   let write;
   try {
-    write = await writeContract({
+    write = await trackedWrite(member.id, req.headers.get('idempotency-key') ?? `resolve_${docket}_${current.panel_round}`, {
       address: court,
       functionName: 'resolve_review',
       args: [docket],
-    });
+    }, docket);
   } catch (err) {
+    const existing = existingOperationResponse(err);
+    if (existing) return existing;
     if (err instanceof ReceiptTimeoutError) {
       return Response.json(
         {
@@ -59,7 +68,7 @@ export async function POST(req: Request, context: { params: Promise<{ docket: st
         { status: 202 },
       );
     }
-    throw err;
+    return Response.json({ error: 'The transaction could not be confirmed. Check its history before trying again.' }, { status: 502 });
   }
 
   if (!write.ok) {

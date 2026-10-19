@@ -434,3 +434,10 @@ export async function indexHealth(): Promise<{ ok: boolean; detail: string }> {
     };
   }
 }
+
+/** Sponsorship is limited to the authenticated owner of the indexed case. */
+export async function memberOwnsCase(memberId: string, docket: string): Promise<boolean> {
+  await migrate();
+  const rows = await sql()`SELECT docket FROM cases WHERE member_id = ${memberId} AND docket = ${docket}`;
+  return Array.isArray(rows) && rows.length > 0;
+}
