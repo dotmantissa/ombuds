@@ -12,10 +12,16 @@ Re-capture them with scripts/capture_fixtures.py if a bulletin moves.
 import json
 import pathlib
 import re
+import sys
 
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(ROOT))
+from scripts.prepare_test_sdk import prepare
+from gltest.direct import sdk_loader
+
+sdk_loader.CACHE_DIR = prepare()
 FIXTURES = ROOT / "tests" / "fixtures"
 
 CONTRACTS = {

@@ -1,10 +1,11 @@
 /** Reproducible full contract lifecycle, then optionally serve the browser test app. */
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+execFileSync('python3', ['scripts/prepare_test_sdk.py'], { cwd: root, stdio: 'inherit' });
 const ATTO = 10n ** 18n;
 const owner = `0x${'11'.repeat(20)}`;
 const claimant = `0x${'22'.repeat(20)}`;

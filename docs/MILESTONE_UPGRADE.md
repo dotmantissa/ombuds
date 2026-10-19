@@ -66,6 +66,8 @@ Optional `npm run test:index` checks a locally configured Neon database using te
 
 Use Node 22.19+ and Python 3.14. The contract runner hash remains pinned; the contracts contain no `test`/`latest` runner aliases.
 
+Direct tests prepare a project-local SDK cache automatically. CI explicitly downloads the pinned v0.3.0-rc7 bundle using its current upstream asset name and verifies SHA-256 before loading it. This avoids depending on a developer's existing cache or the upstream `latest` release.
+
 ```sh
 python3 -m pip install -r requirements.txt
 npm ci
