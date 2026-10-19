@@ -1920,3 +1920,19 @@ def test_privacy_tripwire_rejects_labelled_codes_and_obfuscation(court, direct_v
     with direct_vm.expect_revert('contains'):
         court.file_case('AETNA-COMMERCIAL-BARIATRIC', 'bariatric_surgery', 'TX', '43644', 'E66.01', '50', text, '2026-04', str(ATTO), 'a' * 64)
     assert court.court_stats()['case_count'] == 0
+
+
+def test_search_filters_before_pagination_and_normalizes_filer(court, direct_vm, direct_alice, direct_bob):
+    direct_vm.sender = direct_alice
+    first = file_clean_case(court)
+    second = file_clean_case(court)
+    direct_vm.sender = direct_bob
+    third = file_clean_case(court)
+    found = court.search_dockets('43644', 'FILED', '', str(direct_alice).lower(), 1, 1)
+    assert found['total'] == 2
+    assert [r['docket'] for r in found['items']] == [first]
+    assert third not in [r['docket'] for r in found['items']]
+    assert court.search_dockets('', 'SETTLED')['total'] == 0
+    with direct_vm.expect_revert('invalid search'):
+        court.search_dockets('', '', '', '', -1, 25)
+    assert court.search_dockets('', '', '', str(direct_alice), 0, 1)['items'][0]['docket'] == second

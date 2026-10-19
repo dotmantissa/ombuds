@@ -6,7 +6,8 @@ import { Banknote, Gavel, Scale, Stamp } from 'lucide-react';
 
 import { ConsensusPip, ConsensusProgress } from '@/components/ConsensusProgress';
 import { Panel } from '@/components/ui/primitives';
-import { useApi } from '@/lib/useApi';
+import { submissionKey, clearSubmissionKey } from '@/lib/submissionKey';
+import { useApi, ApiError } from '@/lib/useApi';
 import { isReviewOpen } from '@/types/ombuds';
 
 /** What a write route answers with when the chain outlasted the request. */
@@ -83,6 +84,7 @@ export function CaseActions({
               : `/api/cases/${docket}/review/resolve`;
       const result = await call<Pending>(path, {
         method: 'POST',
+        headers: { 'idempotency-key': submissionKey(`${docket}:${kind}:${panelRound}`) },
         body: kind === 'advance' ? JSON.stringify({ docket }) : undefined,
       });
       router.refresh();
@@ -95,6 +97,8 @@ export function CaseActions({
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'That did not work.');
+      if (err instanceof ApiError && err.status === 422) clearSubmissionKey(`${docket}:${kind}:${panelRound}`);
+      if (err instanceof ApiError && err.txHash) setTxHash(err.txHash);
       setNote(null);
     } finally {
       setBusy(null);
@@ -104,14 +108,14 @@ export function CaseActions({
   const closed = status === 'SETTLED' || status === 'REJECTED';
   const reviewOpen = isReviewOpen(status);
   const heard = status === 'REVIEWED';
-  const disabled = busy !== null || !authenticated;
+  const disabled = busy !== null || outlasted !== null || !authenticated;
 
   return (
     <Panel className="p-7">
       <p className="mono text-12 text-text-3">What you can do next</p>
 
       <div className="mt-4 flex flex-wrap gap-3">
-        {!hasVerdict && !closed && (
+        {(!hasVerdict || status === 'UNDER_REVIEW') && !closed && (
           <button
             type="button"
             disabled={disabled}
@@ -120,7 +124,7 @@ export function CaseActions({
             style={{ borderRadius: 'var(--radius-hair)' }}
           >
             {busy === 'adjudicate' ? <ConsensusPip /> : <Gavel size={16} aria-hidden="true" />}
-            Send it to a panel
+            {status === 'UNDER_REVIEW' ? 'Ask the fresh panel to review' : 'Send it to a panel'}
           </button>
         )}
 
@@ -150,7 +154,7 @@ export function CaseActions({
           </button>
         )}
 
-        {heard && !closed && (
+        {(heard || status === 'UNDER_REVIEW') && !closed && (
           <button
             type="button"
             disabled={disabled}
@@ -159,7 +163,7 @@ export function CaseActions({
             style={{ borderRadius: 'var(--radius-hair)' }}
           >
             {busy === 'resolve' ? <ConsensusPip /> : <Stamp size={16} aria-hidden="true" />}
-            Close the appeal and release the bond
+            {heard ? 'Close the appeal and settle the bond' : 'Abandon the unheard appeal and return the bond'}
           </button>
         )}
       </div>
@@ -193,8 +197,7 @@ export function CaseActions({
 
       {status === 'UNDER_REVIEW' && (
         <p className="mt-4 text-13 text-wait">
-          A bond is posted and a fresh panel has this case. The bond goes to whoever turns out to be
-          right.
+          A bond is posted and a fresh panel has this case. A changed ruling returns the bond to its funder; an unchanged ruling forfeits it to the court.
         </p>
       )}
 

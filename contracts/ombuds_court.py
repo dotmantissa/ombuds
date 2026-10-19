@@ -1349,6 +1349,40 @@ class OmbudsCourt(gl.Contract):
         return out
 
     @gl.public.view
+    def search_dockets(self, query: str = "", status: str = "", plan_id: str = "", filer: str = "", offset: int = 0, limit: int = 25) -> dict:
+        if offset < 0 or limit < 1 or limit > 100 or len(query) > 100:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} invalid search or pagination")
+        if status != "" and status not in CASE_STATUSES:
+            raise gl.vm.UserError(f"{ERROR_EXPECTED} unknown case status")
+        matches = []
+        term = query.strip().lower()
+        source = self.dockets if filer == "" else self.by_filer.get(_normalise_address(filer))
+        if source is None:
+            return {"total": 0, "items": [], "offset": offset}
+        for docket in source:
+            case = self.cases[docket]
+            if status != "" and case.status != status:
+                continue
+            if plan_id != "" and case.plan_id != plan_id:
+                continue
+            searchable = " ".join((docket, case.plan_id, case.family_id, case.state, case.cpt_codes, case.icd10_codes)).lower()
+            if term != "" and term not in searchable:
+                continue
+            matches.append(docket)
+        matches.reverse()
+        rows = []
+        for docket in matches[offset:offset + limit]:
+            case = self.cases[docket]
+            verdict = self.verdicts.get(docket)
+            rows.append({"docket": docket, "plan_id": case.plan_id, "family_id": case.family_id,
+                "state": case.state, "status": case.status, "filed_at": case.filed_at,
+                "disputed_atto": str(int(case.disputed_atto)), "ground": verdict.ground if verdict is not None else "",
+                "overturn_recommended": bool(verdict.overturn_recommended) if verdict is not None else False,
+                "recoverable_band": int(verdict.recoverable_band) if verdict is not None else 0,
+                "confidence": int(verdict.confidence) if verdict is not None else 0})
+        return {"total": len(matches), "items": rows, "offset": offset}
+
+    @gl.public.view
     def cases_for_filer(self, filer: str) -> list:
         bucket = self.by_filer.get(_normalise_address(filer))
         if bucket is None:

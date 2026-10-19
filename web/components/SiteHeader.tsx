@@ -11,7 +11,8 @@ const NAV = [
   { href: '/file', label: 'File a case' },
   { href: '/docket', label: 'The docket' },
   { href: '/pool', label: 'Advance pool' },
-  { href: '/how-it-works', label: 'How it works' },
+  { href: '/account', label: 'Your cases' },
+  { href: '/policies', label: 'Policy monitor' },
 ];
 
 export function SiteHeader() {

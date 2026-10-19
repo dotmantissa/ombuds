@@ -17,6 +17,10 @@ import { evmWalletAddress } from '@/lib/address';
  * so what the form shows and what the chain records cannot drift apart. It is null before
  * Privy has finished making the wallet, and the UI has to say so rather than guess.
  */
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number, readonly txHash: string | null = null) { super(message); }
+}
+
 export function useApi() {
   const { getAccessToken, authenticated, user } = usePrivy();
 
@@ -45,7 +49,8 @@ export function useApi() {
           body !== null && typeof body === 'object' && 'error' in body
             ? String((body as { error: unknown }).error)
             : `That request failed with status ${res.status}.`;
-        throw new Error(message);
+        const txHash = body && typeof body === 'object' && 'txHash' in body ? String(body.txHash) : null;
+        throw new ApiError(message, res.status, txHash);
       }
       return body as T;
     },

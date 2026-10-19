@@ -1,17 +1,22 @@
+import { pageNumber } from '@/lib/protocol';
 import Link from 'next/link';
 import { Gavel, Scale } from 'lucide-react';
 
 import { Code, FullRule, Label, Panel, Stat, StatusChip } from '@/components/ui/primitives';
-import { courtStats, docketPage } from '@/lib/chainReads';
+import { courtStats, searchDockets } from '@/lib/chainReads';
 import { bandLabel, formatAttoRounded } from '@/lib/bands';
-import { GROUND_LABELS, isGround } from '@/types/ombuds';
+import { GROUND_LABELS, isGround, CASE_STATUSES, CASE_STATUS_LABELS } from '@/types/ombuds';
 
 export const dynamic = 'force-dynamic';
 export const metadata = { title: 'The docket' };
 
-export default async function DocketPage() {
-  const [stats, rows] = await Promise.all([courtStats(), docketPage(0, 40)]);
-  const cases = rows ?? [];
+export default async function DocketPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
+  const query = await searchParams;
+  const offset = pageNumber(query.offset);
+  const q = (query.q ?? '').slice(0, 100);
+  const status = CASE_STATUSES.includes(query.status as never) ? query.status! : '';
+  const [stats, page] = await Promise.all([courtStats(), searchDockets(q, status, query.plan ?? '', '', offset, 25)]);
+  const cases = page?.items ?? [];
 
   const overturnRate =
     stats !== null && stats.verdict_count > 0
@@ -70,10 +75,17 @@ export default async function DocketPage() {
         )}
       </Panel>
 
+      <form className="mt-8 flex flex-wrap gap-3" action="/docket">
+        <input name="q" aria-label="Search cases" defaultValue={q} placeholder="Docket, plan, procedure or code" maxLength={100} className="min-w-48 flex-1 border border-line bg-raised p-3 text-14" />
+        <select name="status" aria-label="Case status" defaultValue={status} className="border border-line bg-raised p-3 text-14"><option value="">All statuses</option>{CASE_STATUSES.map((v) => <option key={v} value={v}>{CASE_STATUS_LABELS[v]}</option>)}</select>
+        <input name="plan" aria-label="Filter by exact plan ID" defaultValue={query.plan ?? ''} placeholder="Exact plan ID (optional)" className="border border-line bg-raised p-3 text-14" />
+        <button className="border border-signal px-5 py-3 text-14">Search cases</button>
+      </form>
+      {page === null && <p role="alert" className="mt-4 text-14 text-wait">The court could not be read. Refresh to try again.</p>}
       {cases.length === 0 ? (
         <Panel className="mt-8 p-8 text-center">
           <Scale size={22} className="mx-auto text-text-3" aria-hidden="true" />
-          <p className="mt-3 text-16 text-text">Nothing on the docket yet.</p>
+          <p className="mt-3 text-16 text-text">No cases in this view.</p>
           <p className="mx-auto mt-2 max-w-[32rem] text-14 text-text-2">
             The court is deployed and the rules are registered. The first case will show up here the
             moment somebody files one.
@@ -84,7 +96,7 @@ export default async function DocketPage() {
             style={{ borderRadius: 'var(--radius-hair)' }}
           >
             <Gavel size={15} aria-hidden="true" />
-            File the first one
+            File a case
           </Link>
         </Panel>
       ) : (
@@ -159,6 +171,11 @@ export default async function DocketPage() {
         </div>
       )}
 
+      {page && <nav aria-label="Case pages" className="mt-6 flex items-center justify-between gap-3 text-14">
+        {offset > 0 ? <Link className="text-signal-bright" href={`/docket?${new URLSearchParams({ q, status, plan: query.plan ?? '', offset: String(Math.max(0, offset - 25)) })}`}>Previous</Link> : <span />}
+        <span>{page.total} matching cases · page {offset / 25 + 1}</span>
+        {offset + 25 < page.total && <Link className="text-signal-bright" href={`/docket?${new URLSearchParams({ q, status, plan: query.plan ?? '', offset: String(offset + 25) })}`}>Next</Link>}
+      </nav>}
       <p className="mono mt-6 text-12 text-text-3">
         This table is read straight off the OmbudsCourt contract. The search index is used for
         filtering and history, and it is never the reason a verdict is believed.

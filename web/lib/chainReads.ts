@@ -14,6 +14,9 @@ import {
 } from './genlayer';
 
 export interface ChainRule {
+  policy_version?: number;
+  policy_digest?: string;
+  previous_content_hash?: string;
   plan_id: string;
   insurer: string;
   family_id: string;
@@ -224,4 +227,38 @@ export function quoteAdvance(docket: string) {
       band?: number;
     }>({ address: advancePoolAddress(), functionName: 'quote_advance', args: [docket] }),
   );
+}
+
+export interface CaseSummary {
+  docket: string; plan_id: string; family_id: string; state: string; status: string;
+  filed_at: string; disputed_atto: string; ground: string; recoverable_band: number;
+  overturn_recommended: boolean; confidence: number;
+}
+export function searchDockets(query = '', status = '', plan = '', filer = '', offset = 0, limit = 25) {
+  return attempt(() => readContract<import('./protocol').Page<CaseSummary>>({ address: ombudsCourtAddress(),
+    functionName: 'search_dockets', args: [query, status, plan, filer, offset, limit] }));
+}
+export function caseHistory(docket: string, offset = 0, limit = 25) {
+  return attempt(() => readContract<import('./protocol').Page<import('./protocol').ProtocolEvent>>({
+    address: ombudsCourtAddress(), functionName: 'case_history', args: [docket, offset, limit] }));
+}
+export function verdictHistory(docket: string, offset = 0, limit = 25) {
+  return attempt(() => readContract<import('./protocol').Page<import('./protocol').RoundVerdict> & { filed_policy: ChainRule }>({
+    address: ombudsCourtAddress(), functionName: 'verdict_history', args: [docket, offset, limit] }));
+}
+export function poolTransactions(offset = 0, limit = 25, actor = '', docket = '') {
+  return attempt(() => readContract<import('./protocol').Page<import('./protocol').ProtocolEvent>>({
+    address: advancePoolAddress(), functionName: 'transaction_history', args: [offset, limit, actor, docket] }));
+}
+export function poolPayouts(offset = 0, limit = 25, recipient = '') {
+  return attempt(() => readContract<import('./protocol').Page<import('./protocol').Payout>>({
+    address: advancePoolAddress(), functionName: 'payout_history', args: [offset, limit, recipient] }));
+}
+export function underwriterPosition(address: string) {
+  return attempt(() => readContract<PoolPosition & { entitlement_atto: string; reserved_atto: string }>({
+    address: advancePoolAddress(), functionName: 'position_of', args: [address] }));
+}
+export function policyHistory(planId: string, offset = 0, limit = 25) {
+  return attempt(() => readContract<import('./protocol').Page<ChainRule & { event: string; recorded_at: string; policy_digest: string; policy_version: number }>>({
+    address: planRegistryAddress(), functionName: 'policy_history', args: [planId, offset, limit] }));
 }

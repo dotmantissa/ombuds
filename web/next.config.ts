@@ -32,6 +32,7 @@ const nextConfig: NextConfig = {
    */
   outputFileTracingRoot: path.resolve(__dirname),
   outputFileTracingIncludes: {
+    '/*': ['./lib/schema.sql'],
     '/api/sources': ['./data/sources.json'],
     '/api/cases/[docket]/letter': ['./data/sources.json'],
     '/sources': ['./data/sources.json'],

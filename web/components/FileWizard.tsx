@@ -1,5 +1,7 @@
 'use client';
 
+import { submissionKey, clearSubmissionKey } from '@/lib/submissionKey';
+
 import { useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
@@ -16,7 +18,7 @@ import { ConsensusPip, ConsensusProgress } from '@/components/ConsensusProgress'
 import { Code, FullRule, Panel, RailNote } from '@/components/ui/primitives';
 import { normaliseAddress } from '@/lib/address';
 import { sha256Hex, scrubText, extractCodes, normaliseDocumentText } from '@/lib/deident';
-import { useApi } from '@/lib/useApi';
+import { useApi, ApiError } from '@/lib/useApi';
 
 interface RuleOption {
   planId: string;
@@ -159,7 +161,7 @@ export function FileWizard({
       const evidenceSha256 = originalDigest ?? await sha256Hex(letter);
       if (reviewed !== reviewSignature) throw new Error('Review the sanitized record and confirm privacy before filing.');
       if (filingKey.current.signature !== reviewSignature) {
-        filingKey.current = { signature: reviewSignature, key: crypto.randomUUID() };
+        filingKey.current = { signature: reviewSignature, key: submissionKey(`file:${evidenceSha256}:${planId}:${serviceDate.slice(0, 7)}`) };
       }
       const result = await call<{
         docket: string | null;
@@ -196,6 +198,11 @@ export function FileWizard({
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'That filing did not go through.');
+      if (err instanceof ApiError && err.status === 422) {
+        const digest = originalDigest ?? await sha256Hex(letter);
+        clearSubmissionKey(`file:${digest}:${planId}:${serviceDate.slice(0, 7)}`);
+        filingKey.current = { signature: '', key: '' };
+      }
     } finally {
       setBusy(false);
     }

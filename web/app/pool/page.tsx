@@ -1,3 +1,8 @@
+import Link from 'next/link';
+import { AccountDashboard } from '@/components/AccountDashboard';
+import { FinancialHistory } from '@/components/FinancialHistory';
+import { poolTransactions, poolPayouts } from '@/lib/chainReads';
+import { pageNumber } from '@/lib/protocol';
 import { Coins, TrendingDown, TrendingUp } from 'lucide-react';
 
 import { FullRule, Label, Panel, RailNote, Stat } from '@/components/ui/primitives';
@@ -19,7 +24,10 @@ function genOf(atto: string | undefined): string {
   }
 }
 
-export default async function PoolPage() {
+export default async function PoolPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
+  const query = await searchParams;
+  const offset = pageNumber(query.offset);
+  const [history, payouts] = await Promise.all([poolTransactions(offset), poolPayouts(offset)]);
   const [stats, config, ledger] = await Promise.all([poolStats(), poolConfig(), advanceLedger(25)]);
   const rows = ledger ?? [];
 
@@ -188,6 +196,10 @@ export default async function PoolPage() {
           </RailNote>
         </div>
       </div>
+      <AccountDashboard poolOnly />
+      <Panel className="mt-8 p-6"><h2 className="display mb-6 text-26">Pool transaction history</h2><FinancialHistory history={history} payouts={payouts} />
+        <nav className="mt-5 flex justify-between text-14" aria-label="Pool history pages">{offset > 0 ? <Link className="text-signal-bright" href={`?offset=${Math.max(0, offset - 25)}`}>Previous</Link> : <span />}{Math.max(history?.total ?? 0, payouts?.total ?? 0) > offset + 25 && <Link className="text-signal-bright" href={`?offset=${offset + 25}`}>Next</Link>}</nav>
+      </Panel>
     </section>
   );
 }

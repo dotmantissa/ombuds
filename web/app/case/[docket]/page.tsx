@@ -1,3 +1,5 @@
+import { CaseHistory } from '@/components/CaseHistory';
+import { pageNumber } from '@/lib/protocol';
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { ExternalLink, FileText, Fingerprint, Quote } from 'lucide-react';
@@ -32,7 +34,8 @@ export async function generateMetadata({ params }: { params: Promise<{ docket: s
   return { title: `Docket ${docket}` };
 }
 
-export default async function CasePage({ params }: { params: Promise<{ docket: string }> }) {
+export default async function CasePage({ params, searchParams }: { params: Promise<{ docket: string }>; searchParams: Promise<Record<string, string | undefined>> }) {
+  const query = await searchParams;
   const { docket } = await params;
   if (!DOCKET.test(docket)) notFound();
 
@@ -344,6 +347,7 @@ export default async function CasePage({ params }: { params: Promise<{ docket: s
           </Link>
         </div>
       </div>
+      <CaseHistory docket={docket} eventOffset={pageNumber(query.events)} verdictOffset={pageNumber(query.verdicts)} />
     </section>
   );
 }
