@@ -3,7 +3,7 @@ import Link from 'next/link';
 import { AccountDashboard } from '@/components/AccountDashboard';
 import { FinancialHistory } from '@/components/FinancialHistory';
 import { poolTransactions, poolPayouts } from '@/lib/chainReads';
-import { pageNumber } from '@/lib/protocol';
+import { pageNumber, formatGen } from '@/lib/protocol';
 import { Coins, TrendingDown, TrendingUp } from 'lucide-react';
 
 import { FullRule, Label, Panel, RailNote, Stat } from '@/components/ui/primitives';
@@ -14,15 +14,7 @@ export const dynamic = 'force-dynamic';
 export const metadata = { title: 'Advance pool' };
 
 function genOf(atto: string | undefined): string {
-  if (atto === undefined) return '--';
-  try {
-    const value = BigInt(atto);
-    const whole = value / 10n ** 18n;
-    const frac = ((value % 10n ** 18n) * 100n) / 10n ** 18n;
-    return `${whole}.${frac.toString().padStart(2, '0')}`;
-  } catch {
-    return '--';
-  }
+  return atto === undefined ? '--' : formatGen(atto).replace(/ GEN$/, '');
 }
 
 export default async function PoolPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {

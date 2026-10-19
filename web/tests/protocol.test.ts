@@ -9,6 +9,7 @@ test('financial displays preserve large integer amounts and show small nonzero b
   assert.equal(formatGen('1'), '<0.0001 GEN');
   assert.equal(formatGen(undefined), 'Unavailable');
   assert.equal(formatGen('0'), '0.0000 GEN');
+  assert.equal(formatGen('9000000000000000'), '0.0090 GEN');
 });
 test('unsafe pagination input never becomes a negative or unbounded offset', () => {
   for (const input of ['-1', 'NaN', 'Infinity', '1.5', '999999999999999999999']) assert.equal(pageNumber(input), 0);
